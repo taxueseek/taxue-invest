@@ -1,0 +1,4 @@
+# invest 推理档位配置（本机覆盖）
+# 优先级高于 mode.yaml，不随公开版分发
+
+mode: high

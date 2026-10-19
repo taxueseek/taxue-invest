@@ -178,7 +178,27 @@ npx skills add taxueseek/taxue-invest
 
 ---
 
-## v3.0 增量（本版）：三层架构 + 推理档位
+## v3.1 增量（本版）：数据源适配器迭代 + 测试扩充 + 美股支持
+
+这一版在 v3.0 三层架构基础上，重点强化了数据源适配、测试覆盖和美股支持。
+
+**相对上一版改进/新增能力：**
+- **数据源适配器全面迭代**：eastmoney / hithink / tencent / tiingo / wind / mxds / ttskill / etfirst 全部更新，路由逻辑增强（route.py / index_hub.py / env.py）
+- **测试覆盖扩充**：新增 8 个测试文件（test_adapter_wiring / test_doc_source_truth / test_envelope / test_module_size_gate / test_mx_data_router / test_output_budget / test_py39_compat / test_skill_doc_budget / test_static_imports），8 个已有测试文件更新
+- **美股支持优化**：invest-stock / mx-data SKILL.md 增强美股用法说明，路由表扩充「季报」「财报」「研报」关键词
+- **文档与工具**：invest-cli/docs/INDEX.md（文档索引）、两份性能治理报告、check.py（工具脚本）、requirements-dev.txt（开发依赖）
+- **版本号**：3.0 → 3.1
+
+**默认关闭功能的打开方式：**
+- `invest/references/mode.local.yaml`（本机推理档位配置）
+
+**相关依赖：**
+- invest-cli 需要 yfinance（美股数据）
+- invest-cli 需要 Python 3.9+
+
+---
+
+## v3.0 增量（历史版本）：三层架构 + 推理档位
 
 这一版把 invest 系列从「一堆并列的技能」改成**分层架构**，并让「要不要出报告」变成**按需**而不是默认。
 
@@ -775,7 +795,25 @@ Add `--json` for structured output an agent can parse; omit it for a terminal ta
 
 ## Recent Improvements & Performance
 
-### v3.0: three-layer architecture + inference tiers
+### v3.1: data source adapter iteration + test coverage expansion + US stock support
+
+This version builds on v3.0's three-layer architecture, focusing on data source adapter iteration, test coverage expansion, and US stock support.
+
+**Improvements over the previous version:**
+- **Data source adapters fully iterated**: eastmoney / hithink / tencent / tiingo / wind / mxds / ttskill / etfirst all updated; routing logic enhanced (route.py / index_hub.py / env.py)
+- **Test coverage expanded**: 8 new test files (test_adapter_wiring / test_doc_source_truth / test_envelope / test_module_size_gate / test_mx_data_router / test_output_budget / test_py39_compat / test_skill_doc_budget / test_static_imports), 8 existing test files updated
+- **US stock support optimized**: invest-stock / mx-data SKILL.md enhanced with US stock usage instructions; routing table expanded with "季报" / "财报" / "研报" keywords
+- **Documentation and tools**: invest-cli/docs/INDEX.md (documentation index), two performance governance reports, check.py (utility script), requirements-dev.txt (development dependencies)
+- **Version**: 3.0 → 3.1
+
+**Opt-in features:**
+- `invest/references/mode.local.yaml` (local inference tier configuration)
+
+**Dependencies:**
+- invest-cli requires yfinance (US stock data)
+- invest-cli requires Python 3.9+
+
+### v3.0 (historical): three-layer architecture + inference tiers
 
 This version turns the invest series from "a pile of parallel skills" into a **layered architecture**, and makes "produce a report" **on-demand** instead of the default.
 
