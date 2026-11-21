@@ -11,19 +11,10 @@ from datetime import datetime
 
 # urllib3 2.x 在 LibreSSL 环境下导入时 emit NotOpenSSLWarning，直接写 stderr。
 # CLI 的 stderr 是错误通道，不该被库噪音占据（agent 解析错误信息会被带偏）。
-# 必须在 import requests **之前**装过滤器，否则告警已在导入期发出。
-#
-# 注意 category 必须写 Warning 而不是 UserWarning：该告警的继承链是
-# NotOpenSSLWarning → SecurityWarning → HTTPWarning → Warning，
-# 与 UserWarning 无继承关系，用 UserWarning 或 message 正则都拦不住
-# （实测两者均无效，只有按 Warning + module 才生效）。
-#
-# 过滤器留在模块层，`import requests` 下沉到 query_eastmoney()：requests 的
-# import 自耗时实测约 70ms（含 urllib3/charset_normalizer/certifi 一整串），
-# 而它只服务东财**兜底**这一条路——快照主路走 route.fetch（同花顺优先），
-# 绝大多数调用根本走不到这里。放在模块顶层等于每次 `invest-cli stock` 都先
-# 白付 70ms。过滤器与 import 的先后关系不受影响：模块导入即装过滤器，
-# 而 requests 的首次导入发生在第一次真正调用 query_eastmoney 时，始终在后。
+# 东财主网出口已改为标准库 sources/_http.guarded_request，不再直接导入 requests；
+# 保留模块级过滤以防传递依赖（如 yfinance/urllib3）在系统解释器下触发告警。
+# 注意 category 必须写 Warning 而不是 UserWarning（NotOpenSSLWarning 继承链
+# 为 NotOpenSSLWarning → SecurityWarning → HTTPWarning → Warning）。
 warnings.filterwarnings("ignore", category=Warning, module=r"urllib3.*")
 
 EASTMONEY_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw/query"
@@ -40,17 +31,28 @@ def get_api_key():
 
 
 def query_eastmoney(query: str) -> dict:
-    """调用东方财富 API，返回原始响应"""
-    import requests  # noqa: PLC0415 —— 见文件头「下沉 import」说明
+    """调用东方财富 API，返回原始响应。
 
-    resp = requests.post(
+    2026-11-09 P0 收口：从 requests.post 改走共享安全闸 sources/_http.guarded_request
+    （https + host 白名单 + DNS 公网校验 + 禁重定向）。此前 requests 不过闸，
+    DNS rebinding 与重定向绕过对本路径完全失效。
+    """
+    from sources._http import guarded_request
+
+    status, body, _headers = guarded_request(
         EASTMONEY_URL,
         headers={"apikey": get_api_key(), "Content-Type": "application/json"},
-        json={"toolQuery": query},
+        json_body={"toolQuery": query},
         timeout=30,
+        allowed_host="mkapi2.dfcfs.com",
     )
-    resp.raise_for_status()
-    return resp.json()
+    if status < 200 or status >= 300:
+        snippet = body[:200].decode("utf-8", errors="replace").replace("\n", " ")
+        raise RuntimeError(f"东财 HTTP {status}: {snippet}")
+    try:
+        return json.loads(body.decode("utf-8", errors="replace"))
+    except ValueError as e:
+        raise RuntimeError(f"东财返回非 JSON: {e}") from e
 
 
 def parse_tables(raw: dict) -> list[dict]:

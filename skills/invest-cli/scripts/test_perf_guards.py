@@ -366,9 +366,18 @@ def test_cache_layer_has_production_callers() -> None:
 #   ② curl_cffi 实际设置的是 _MS 变体（155/156，毫秒），13/78 从不被设置。
 # 结果：请求 30s 超时照旧 30s 才返回，"修复" 100% 不生效却全程静默。
 # 这组用例专门防止「补丁存在但不起作用」的回归。
+# curl_cffi 是 yfinance 的内部依赖：系统 3.9 不装 yfinance（美股走 re-exec 进
+# venv，2026-10-23 环境清理后的支持形态），也就没有 curl_cffi。补丁真值由
+# 装了它的解释器（skill 自带 venv）钉住，缺件解释器跳过而非误报失败。
 
 def test_curl_cffi_session_is_not_requests_session() -> None:
     """记录前提：两者无继承关系——这正是首版补丁失效的原因。"""
+    import importlib.util
+
+    if importlib.util.find_spec("curl_cffi") is None:
+        import pytest
+
+        pytest.skip("本解释器未装 curl_cffi（yfinance 内部依赖）")
     import requests
     from curl_cffi import requests as creq
 
@@ -379,6 +388,12 @@ def test_curl_cffi_session_is_not_requests_session() -> None:
 
 def test_bound_timeouts_uses_ms_option_codes() -> None:
     """必须拦 _MS 档（155/156）；只拦秒档等于没拦。"""
+    import importlib.util
+
+    if importlib.util.find_spec("curl_cffi") is None:
+        import pytest
+
+        pytest.skip("本解释器未装 curl_cffi（yfinance 内部依赖）")
     from curl_cffi.const import CurlOpt
 
     assert int(CurlOpt.TIMEOUT_MS) == 155 and int(CurlOpt.CONNECTTIMEOUT_MS) == 156
@@ -718,10 +733,27 @@ def test_snapshot_cache_is_checked_before_routing() -> None:
 
     src = (_SCRIPTS / "sources" / "route.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
-    fn = next(
-        (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "fetch"),
-        None,
-    )
+
+    def _fn(name: str):
+        return next(
+            (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name),
+            None,
+        )
+
+    # fetch 在 2026-11 起是「实现 + 记账」的两层：公开层 fetch 只负责调用与
+    # usage_log，缓存顺序的不变式落在 _fetch_impl 里。门禁跟着实现走，但必须先
+    # 确认公开层确实委托给它，否则可能守到一段死代码。
+    impl = _fn("_fetch_impl")
+    if impl is not None:
+        public = _fn("fetch")
+        assert public is not None and any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            and n.func.id == "_fetch_impl"
+            for n in ast.walk(public)
+        ), "route.fetch 不再委托 _fetch_impl——门禁可能守到死代码"
+        fn = impl
+    else:
+        fn = _fn("fetch")
     assert fn is not None, "route.fetch 不见了"
 
     def _first_line(pred) -> int | None:

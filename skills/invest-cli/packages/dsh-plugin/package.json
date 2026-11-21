@@ -1,13 +1,14 @@
 {
   "name": "@taxueseek/invest-cli-dsh",
-  "version": "1.0.0",
-  "description": "invest-cli — DSH 插件：把 invest-cli 的 21 个子命令收敛为**单个** invest 工具（CLI 单发），行情/财报/基金/美股/SEC/A股结构一次可达。安装：dsh plugin --profile web add \"file:<invest-cli>/packages/dsh-plugin\"",
-  "license": "MIT",
+  "version": "1.1.0",
+  "description": "invest-cli — DSH 插件：把 invest-cli 的全部子命令收敛为单个 invest 工具，全市场行情/财报/基金/美股/SEC/A股结构一次可达；自带可视化设置页（运行看板/接入与执行/命令预算/数据源拓扑/API凭据/高级调优）。安装：dsh plugin --profile web add \"file:<invest-cli>/packages/dsh-plugin\"",
+  "license": "Prosperity-3.0",
   "type": "module",
   "main": "./dsh/index.js",
   "exports": {
     ".": "./dsh/index.js",
     "./dsh": "./dsh/index.js",
+    "./client": "./dsh/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -19,13 +20,26 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    },
+    "compatibility": {
+      "dsh": "^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.3 || ^0.2.1-rc.2 || ^0.2.2-rc.1",
+      "dshReleases": {
+        "0.2.2-rc.1": "compatible"
+      }
     }
   },
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "check": "node --check dsh/index.js",
-    "test": "node --test test/index.test.js"
+    "check": "node --check dsh/index.js && node --check dsh/client.js",
+    "typecheck": "npm run check",
+    "test": "node --test test/*.test.js"
   }
 }

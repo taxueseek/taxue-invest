@@ -16,6 +16,14 @@
 
 **铁律：结论里的每一个数字，都必须能追到一条命令的输出。** 拿不到就写「数据不足」，不许估。
 
+**一句话全量模板（先跑完再动嘴，不许边查边写）**：
+
+```bash
+# 单只：业绩+基准+画像+持仓一次拿全（P0 并行后多只自动并发）
+invest-cli tenure <代码> --manager <姓名> --benchmark <外部基准或auto> --json --brief
+invest-cli fund <代码> --json   # 画像+持仓+分位+风险，一次快照
+```
+
 | 需要什么 | 命令 | 产出 | 拿不到时 |
 |---|---|---|---|
 | 任职期业绩/回撤/基准对比/逐日收益 | `invest-cli tenure <代码> --manager <姓名> [--excel out.xlsx]` | 分年度收益率与最大回撤、任职以来累计与年化、基金 vs 基准指数逐日、官方字段校验 | 报「业绩口径不可得」，不降级为「大概」 |
@@ -23,6 +31,7 @@
 | 持仓与行业穿透 | `invest-cli fund <代码>`（重仓段）+ `westock` 板块/资金流 | 前十大、行业集中度、换手 | 标注报告期，缺一期属正常 |
 | 同类横向对标 | `invest-cli intent screen <条件>` 或 `invest-cli screen <条件>` | 同风格 3 只以内候选 | 至少凑 2 只，否则写「横向对标样本不足」 |
 | 经理背景与在管 | `invest-cli tenure --manager <姓名> --brief` | 在管清单（含任职日/规模） | 无 |
+| 外部基准超额（用户点名指数时） | `invest-cli tenure <代码> --manager <姓名> --benchmark <Wind代码>` + `wind.index_series` 同基期校验 | 基金−指数直接超额 | 拿不到写「数据不足」，不许用分位/合同基准冒充 |
 | 舆情/经理观点 | `invest-cli info <关键词>` | 季报观点、访谈、争议 | 标注来源与日期 |
 
 **口径红线（改动必须同步 `references/data-pipeline.md` 与 `invest-cli` 代码）**：

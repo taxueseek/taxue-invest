@@ -30,7 +30,7 @@ LIVE_DOCS = [
     SKILLS_ROOT / "invest-macro" / "SKILL.md",
 ]
 
-INFRA_MODULES = {"__init__", "registry", "route", "env", "_http"}
+INFRA_MODULES = {"__init__", "registry", "route", "env", "_http", "envelope", "_sec_forms", "_sec_xbrl"}
 
 
 def test_yaml_adapters_bijection() -> None:
@@ -89,18 +89,16 @@ def test_retired_ttfund_command_absent() -> None:
         assert "ttfund" not in py.read_text(encoding="utf-8"), "invest_cli.py 不得再挂 ttfund 子命令"
 
 
-def test_entry_source_table_covers_all_sources() -> None:
-    """invest 入口的「数据源门闩」表必须覆盖 yaml 全部源（含不经链的 argo），且无 ttfund 残留。"""
+def test_entry_source_table_defers_to_runtime() -> None:
+    """入口表只写「场景 → 命令」，数据源覆盖由 `invest-cli datasources` 运行时给。
+
+    旧断言要求入口表逐个列出 yaml 全部源——那等于让文档复制一份 yaml，必然
+    漂移（2026-10-17 债券行事故）。源名的唯一真值是 data-sources.yaml，
+    「有没有覆盖」由运行时探测回答，不由文档自证。
+    """
     entry = SKILLS_ROOT / "invest" / "SKILL.md"
     text = entry.read_text(encoding="utf-8")
-    cn_names = {
-        "hithink": "同花顺", "eastmoney": "东方财富", "yfinance": "yfinance",
-        "bitget": "Bitget", "wind": "Wind", "yingmi": "盈米",
-        "ttskill": "ttskill", "argo": "argo", "fred": "FRED",
-        "sec_edgar": "SEC EDGAR",
-    }
-    for sid in load_registry():
-        assert sid in text or cn_names.get(sid, sid) in text, f"入口数据源表缺 {sid}"
+    assert "invest-cli datasources" in text, "入口未指向运行时数据源真值"
     assert "ttfund" not in text, "入口 SKILL.md 仍有小写 ttfund 残留（TTFUND_* 官方包名不受限）"
 
 
@@ -108,5 +106,5 @@ if __name__ == "__main__":
     test_yaml_adapters_bijection()
     test_fund_chain_prose_order()
     test_retired_ttfund_command_absent()
-    test_entry_source_table_covers_all_sources()
+    test_entry_source_table_defers_to_runtime()
     print("test_claims: OK")

@@ -25,7 +25,6 @@ from __future__ import annotations
 import json
 import sys
 
-from sources import tencent
 
 
 def _fmt_pct(v) -> str:
@@ -80,6 +79,12 @@ def _terminal(data: dict, source: str) -> str:
 
 
 def run(symbols: str, as_json: bool = False) -> int:
+    from sources import tencent
+
+    # 这里不再有进程内 L2 缓存：本函数每个进程只被调用一次（invest-cli 分发后
+    # 直接 sys.exit），进程内缓存**永远不会命中**——2026-10-15 引入、2026-10-19
+    # 实测为零收益的死代码，已删除。跨进程去重由 tencent.quote 自己的 10s 磁盘
+    # 缓存承担（命中时载荷带 `cached: true`，终端输出那行提示来自它）。
     res = tencent.quote(symbols)
     if as_json:
         print(json.dumps(res, ensure_ascii=False, indent=2))

@@ -23,21 +23,16 @@
   （0.0044 = 0.44%，用 1 年 divCash 合计 ÷ 现价重算，与 cmd_us.normalize_
   dividend_yield 的「重算优先」同一口径）；max_drawdown_1y 负小数。
 
-安全约束（SSRF 闸，_get_json 是唯一 HTTP 出口，四层缺一不可）：
-  1. 仅 https；
-  2. host 白名单（api.tiingo.com），URL 拼错进不了这里；
-  3. 请求前 DNS 解析并逐 IP 校验，命中私网/环回/链路本地/保留/组播/未指定
-     地址一律拒绝——防 DNS rebinding 把固定域名解析进内网（169.254 云元数据、
-     127.0.0.1 本机服务都过不了这一层）；
-  4. 禁重定向：302 的目标 host 不再过白名单，跟随即绕闸，所以一概拒绝。
+安全约束（SSRF 闸）：_get_json 是唯一 HTTP 出口，四层闸（仅 https / host 白名单
+/ 请求前 DNS 逐 IP 公网校验 / 禁重定向）全部收口在 sources/_http.guarded_open——
+本模块与 fmp.py 曾各持一份内联实现、与 _http 三处并行，闸的任何一层演进都要同步
+三处，漏一处就是真实缺口（第九轮 2026-11-08 并口）。本模块只保留信封语义与
+HTTPError 文案分流。
 """
 from __future__ import annotations
 
-import ipaddress
 import json
 import re
-import socket
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -45,6 +40,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+from ._http import guarded_open
 
 SOURCE_LABEL = "Tiingo 美股 EOD"
 API_HOST = "api.tiingo.com"
@@ -57,39 +54,6 @@ PROBE_USER_AGENT = "invest-cli/1.0 (tiingo source)"
 _TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,11}$")
 # fundamentals/daily 每行只取这些键（整条序列约 3 年日频，全量拉回按尾行取值）
 _FUND_KEYS = ("marketCap", "peRatio", "pbRatio", "trailingPEG1Y", "date")
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """一概拒绝重定向：新目标不会过 host 白名单与私网校验，跟随即绕闸。"""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N802
-        return None
-
-
-_OPENER = urllib.request.build_opener(_NoRedirect)
-
-# Clash/Mihomo TUN 的 fake-ip 默认段：v4 198.18.0.0/15（RFC 2544）+ v6 2001:2::/48
-# （RFC 5180，实测 api.tiingo.com 两条都出过：198.18.0.241 / 2001:2::f0）。
-# 本机 TUN 全局接管流量：**所有**域名都解析到这两段假 IP，连接由 TUN 按域名转出，
-# curl 正常可通。它们不指向任何本机/内网服务，拒绝等于把守卫变成断网器；
-# 真正的危险段（环回/RFC1918/链路本地）照拒不误。
-_FAKE_IP_NETS = tuple(
-    ipaddress.ip_network(n) for n in ("198.18.0.0/15", "2001:2::/48")
-)
-
-
-def _assert_public_host(hostname: str) -> None:
-    """DNS 解析并逐 IP 校验，非公网地址直接拒绝（防 rebinding 打内网/元数据）。"""
-    infos = socket.getaddrinfo(hostname, 443, proto=socket.IPPROTO_TCP)
-    if not infos:
-        raise ValueError(f"{hostname} DNS 解析为空")
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if any(ip in net for net in _FAKE_IP_NETS):
-            continue  # 透明代理 fake-ip：按域名转出，不落内网
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                or ip.is_multicast or ip.is_unspecified):
-            raise ValueError(f"{hostname} 解析到非公网地址 {ip}，拒绝请求")
 
 
 def credential_files() -> list[Path]:
@@ -122,9 +86,9 @@ def normalize_ticker(symbol: str) -> str:
 
 
 def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[Optional[Any], Optional[str]]:
-    """唯一 HTTP 出口：https + host 白名单 + DNS 公网校验 + 禁重定向。
+    """唯一 HTTP 出口：闸（https/白名单/逐 IP 公网校验/禁重定向）走共享 guarded_open。
 
-    校验全部收口在出口而不是调用方：将来任何新端点复用本函数都免不掉这四道闸。
+    本函数只保留信封语义：(payload, err) 元组与 HTTPError 的文案分流。
     """
     try:
         parts = urllib.parse.urlsplit(url)
@@ -132,14 +96,12 @@ def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[Optional[Any], 
         return None, "URL 非法"
     if parts.scheme != "https" or parts.hostname != API_HOST:
         return None, f"拒绝非 {API_HOST} 的 https 请求"
-    try:
-        _assert_public_host(parts.hostname)
-    except (OSError, ValueError) as e:
-        return None, f"host 校验拒绝: {e}"
     req = urllib.request.Request(url, headers={"User-Agent": PROBE_USER_AGENT})
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with guarded_open(req, timeout=timeout, allowed_host=API_HOST) as resp:
             body = resp.read().decode("utf-8", errors="replace")
+    except ValueError as e:
+        return None, f"host 校验拒绝: {e}"
     except urllib.error.HTTPError as e:
         detail = ""
         try:
@@ -255,7 +217,10 @@ def _history_summary(bars: list[dict], price: Optional[float]) -> dict[str, Any]
 
 
 def _envelope(kind: str, ok: bool, data: Any = None, error: str = "") -> dict[str, Any]:
-    return {"source": "tiingo", "kind": kind, "ok": ok, "data": data, "error": error}
+    """本源的出口。构造收口到 sources/envelope（P1，2026-11-09）。"""
+    from .envelope import envelope
+
+    return envelope("tiingo", kind, ok, data=data, error=error or None)
 
 
 def eod_history(symbol: str, years: float = 1.0, use_cache: bool = True) -> dict[str, Any]:

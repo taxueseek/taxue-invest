@@ -2,6 +2,8 @@
 """Bitget rToken adapter tests — default run needs no live network."""
 from __future__ import annotations
 
+import pytest
+
 import json
 import os
 import sys
@@ -136,14 +138,16 @@ def test_registry_bitget() -> None:
     reg = load_registry()
     assert "bitget" in reg
     conf = reg["bitget"]
-    assert conf.get("priority") == 35
+    assert conf.get("priority") == 34
     assert conf.get("coverage") == ["us"]
+    assert conf.get("route_kinds") == [], "v3.8 起 Bitget 代币价不再进入美股默认快照链"
     assert (conf.get("detect") or {}).get("type") == "always"
     available, detail = detect(conf)
     assert available is True
     assert "始终可用" in detail
 
 
+@pytest.mark.live
 def test_live_optional() -> None:
     if os.environ.get("INVEST_LIVE") != "1":
         return

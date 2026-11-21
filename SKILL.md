@@ -6,8 +6,8 @@ description: |
   触发：「分析一下」「看看这个」「值得买吗」「这只怎么样」「资产配置」「大师怎么看」「基金分析」「股票分析」「黄金能买吗」「转债」「REITs」「债券」「流动性」「市场环境」「出个研报」「自选股」「选基」「风险管理」「企业分析」「/cli」
 
   Invest series entry. Route by asset type to a dedicated reviewer. Three layers: methodology (invest-*) / data (mx-data, a thin wrapper over invest-cli) / presentation (mx-templates). Unified data layer via invest-cli (Tencent quotes / Tencent WeStock / Hithink / Eastmoney / yfinance / SEC EDGAR / FRED / Wind / YingMi / Miaoxiang / TTFund official ttskill + argo finance vertical sources).
-license: MIT
-version: 3.0
+license: Prosperity-3.0
+version: 3.2.2
 ---
 
 # Invest 系列：投资分析指南

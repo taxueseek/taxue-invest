@@ -2,6 +2,8 @@
 """Contract tests — no live Eastmoney required."""
 from __future__ import annotations
 
+import pytest
+
 from cmd_stock import resolve_code
 from cmd_fund import resolve_fund_code
 from _common import (
@@ -97,6 +99,7 @@ def test_ttskill_code_pass_through() -> None:
     assert resolve_fcode("110011") == ("110011", "110011")
 
 
+@pytest.mark.live
 def test_ttskill_fund_live() -> None:
     """联网深度用例：ttskill 未登录/未装/凭据过期时跳过；163406 为冒烟基准。
 

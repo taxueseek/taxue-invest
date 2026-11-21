@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 import pytest
 
+import sources._http as _shared_http
 import sources.fmp as fmp
 
 
@@ -92,24 +93,29 @@ def _raise_http_error(code: int, body: str):
     return _BoomOpener()
 
 
-# ---------- 注册表：深取专项、不进快照链 ----------
+# ---------- 注册表：深取专项 + us 链末位兜底 ----------
 
 def test_registry_declaration():
     from sources import load_registry
 
     conf = load_registry().get("fmp")
     assert conf, "data-sources.yaml 缺 fmp 声明"
-    assert conf["priority"] == 46
-    for tag in ("us_fundamentals", "us_estimates", "us_rating", "dividends"):
+    assert conf["priority"] == 38
+    for tag in ("us", "us_fundamentals", "us_estimates", "us_rating", "dividends"):
         assert tag in conf["coverage"]
-    assert "us" not in conf["coverage"], "fmp 不进快照链（coverage 不得含 us）"
+    assert conf["route_kinds"] == ["us"], "fmp 参与美股快照链"
     assert conf["env_var"] == "FMP_API_KEY"
 
 
-def test_fmp_never_enters_us_chain():
+def test_fmp_is_us_chain_last_resort():
     from sources.route import candidates
 
-    assert "fmp" not in candidates("us")
+    chain = candidates("us")
+    assert "fmp" in chain
+    assert chain.index("fmp") < chain.index("tencent") < chain.index("tiingo"), (
+        f"v3.8 起 fmp 基本面源应排在行情/EOD 兜底源之前（当前 {chain}）"
+    )
+    assert "bitget" not in chain, chain
 
 
 def test_detect_reflects_key_presence(monkeypatch):
@@ -151,6 +157,21 @@ def test_deep_snapshot_shape_and_units(monkeypatch, with_key):
     assert d["name"] == "Apple Inc." and d["currency"] == "USD"
 
 
+def test_us_adapter_maps_deep_snapshot_to_cmd_us_shape(monkeypatch, with_key):
+    """链尾兜底必须交回 cmd_us 认得的快照形状，而不是 fmp_deep 的深取形状。"""
+    monkeypatch.setattr(fmp, "_get_json", _fake_get_json(DEEP_ROUTES))
+    res = fmp.us("aapl")
+    assert res["ok"] is True and res["kind"] == "us"
+    data = res["data"]
+    assert data["source"] == "fmp" and data["symbol"] == "AAPL"
+    assert data["quote_basis"] == "delayed"
+    assert data["quote"]["price"] == 329.4
+    assert data["quote"]["market_cap"] == 4838015066400
+    assert "gross_margin" in data["financial"]
+    assert data["analyst"]["rating"] == "B"
+    assert data["business"]["sector"] == "Technology"
+
+
 def test_deep_snapshot_quote_only_survives(monkeypatch, with_key):
     """profile/比率/评级任一路失败只缺字段；价格在就行。"""
     routes = dict(DEEP_ROUTES)
@@ -182,7 +203,7 @@ def test_deep_snapshot_no_key(monkeypatch):
 # ---------- 错误形态分流（_get_json 出口层，真实 HTTPError 打桩） ----------
 
 def test_error_mapping_401(monkeypatch):
-    monkeypatch.setattr(fmp, "_OPENER", _raise_http_error(
+    monkeypatch.setattr(_shared_http, "_OPENER", _raise_http_error(
         401, '{"Error Message": "Invalid API KEY"}'))
     payload, err = fmp._get_json(f"https://{fmp.API_HOST}/stable/quote?symbol=AAPL&apikey=x")
     assert payload is None and "401" in err and "Invalid API KEY" in err
@@ -190,19 +211,19 @@ def test_error_mapping_401(monkeypatch):
 
 def test_error_mapping_402_paywall_vs_unknown_ticker(monkeypatch):
     """同码不同义：付费墙 vs 标的不在订阅覆盖，必须分流成不同文案。"""
-    monkeypatch.setattr(fmp, "_OPENER", _raise_http_error(
+    monkeypatch.setattr(_shared_http, "_OPENER", _raise_http_error(
         402, "Restricted Endpoint: This endpoint is not available under your current subscription"))
     payload, err = fmp._get_json(f"https://{fmp.API_HOST}/stable/etf/holdings?symbol=SPY&apikey=x")
     assert payload is None and "付费墙" in err
 
-    monkeypatch.setattr(fmp, "_OPENER", _raise_http_error(
+    monkeypatch.setattr(_shared_http, "_OPENER", _raise_http_error(
         402, "Premium Query Parameter: 'Special Endpoint : This value set for 'symbol' is not available"))
     payload, err = fmp._get_json(f"https://{fmp.API_HOST}/stable/quote?symbol=NOTREAL&apikey=x")
     assert payload is None and "未找到标的" in err
 
 
 def test_error_mapping_429(monkeypatch):
-    monkeypatch.setattr(fmp, "_OPENER", _raise_http_error(429, "Too many requests"))
+    monkeypatch.setattr(_shared_http, "_OPENER", _raise_http_error(429, "Too many requests"))
     payload, err = fmp._get_json(f"https://{fmp.API_HOST}/stable/quote?symbol=AAPL&apikey=x")
     assert payload is None and "250 次/天" in err
 
@@ -232,7 +253,7 @@ def test_get_json_allows_fake_ip_rejects_loopback(monkeypatch):
     import socket as _socket
 
     monkeypatch.setattr(_socket, "getaddrinfo", lambda *a, **k: [_Info("2001:2::f0")])
-    monkeypatch.setattr(fmp, "_OPENER", _BoomOpener())
+    monkeypatch.setattr(_shared_http, "_OPENER", _BoomOpener())
     _, err = fmp._get_json(f"https://{fmp.API_HOST}/stable/quote?symbol=AAPL")
     assert "host 校验拒绝" not in (err or "")  # fake-ip 放行到连接层
 
@@ -299,6 +320,7 @@ def test_dividends_empty_is_not_found(monkeypatch, with_key):
 
 # ---------- 真实通道（默认跳过；INVEST_LIVE=1 时跑，消耗 250 次/天配额） ----------
 
+@pytest.mark.live
 def test_live_deep_snapshot():
     if __import__("os").environ.get("INVEST_LIVE") != "1":
         pytest.skip("INVEST_LIVE!=1")

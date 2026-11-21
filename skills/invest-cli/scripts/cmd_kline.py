@@ -23,9 +23,6 @@ import json
 import sys
 from datetime import date, timedelta
 
-from sources import tencent, westock
-from sources.tencent import _PERIOD_ALIAS
-
 # westock CLI 的分钟周期（原生命中内核不支持，必须转 CLI；且 CLI 要求 --start/--end）
 _MINUTE = {"m1", "m5", "m15", "m30", "m60", "m120"}
 # 各分钟周期允许的日期跨度上限：**实测得来**（CLI 会直接拒绝超限请求并给出具体天数）：
@@ -34,6 +31,12 @@ _MINUTE = {"m1", "m5", "m15", "m30", "m60", "m120"}
 #   m15/m30 用 20 天可通过；m60/m120 在密集调用下返回「请求过于频繁」，按 20 天给。
 _MINUTE_SPAN = {"m1": 5, "m5": 10}
 _PERIOD_CN = {"day": "日", "week": "周", "month": "月", "year": "年"}
+
+
+def _native_periods() -> set[str]:
+    """原生内核认识的周期集合（中英别名都算）。延迟导入避免冷启动开销。"""
+    from sources.tencent import _PERIOD_ALIAS
+    return set(_PERIOD_ALIAS) | set(_PERIOD_ALIAS.values())
 
 
 def _terminal(data: dict) -> str:
@@ -53,15 +56,10 @@ def _terminal(data: dict) -> str:
     return "\n".join(lines)
 
 
-# 原生内核认识的周期（中英别名都算）：命中走快路径，其余**直接交 CLI**。
-# 这样 CLI 自己的取值域说明就是权威（实测它支持 season / m1…m120），
-# 不会出现「用我们的模板去解释别人的取值域」这种必然不一致的提示。
-_NATIVE = set(_PERIOD_ALIAS) | set(_PERIOD_ALIAS.values())
-
-
 def run(code: str, period: str = "day", limit: int = 60, as_json: bool = False) -> int:
     want = str(period).lower()
-    if want not in _NATIVE:
+    from sources import tencent
+    if want not in _native_periods():
         # 例如 season / m1…m120 / 拼错的周期：原生内核没有这条通道，
         # 但 CLI 有（或会给出它自己的合法取值清单）—— 交给它，我们不猜。
         return _via_cli(code, want, limit, as_json,
@@ -80,6 +78,7 @@ def run(code: str, period: str = "day", limit: int = 60, as_json: bool = False) 
 
 def _via_cli(code: str, period: str, limit: int, as_json: bool,
              note: str = "") -> int:
+    from sources import westock
     args = ["kline", code, "--period", period, "--limit", str(limit)]
     if period in _MINUTE:
         # CLI 对分钟周期强制要求日期范围（近 1 个月内），默认给最近 20 个自然日

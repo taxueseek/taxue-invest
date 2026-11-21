@@ -231,5 +231,16 @@ def test_checker_accepts_legit_patterns(tmp_path: Path) -> None:
     assert scan_source(ok) == []
 
 
+def test_sources_never_insert_sources_dir_into_sys_path() -> None:
+    """sources/*.py 严禁把自身目录插进 sys.path（会遮蔽 PyPI 的 yfinance 等包）。"""
+    sources_dir = _SCRIPTS / "sources"
+    offenders: list[str] = []
+    for py in sorted(sources_dir.glob("*.py")):
+        txt = py.read_text(encoding="utf-8")
+        if "sys.path.insert" in txt and "Path(__file__).parent" in txt:
+            offenders.append(py.name)
+    assert not offenders, f"sources/ 不得插入自身目录到 sys.path: {offenders}"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

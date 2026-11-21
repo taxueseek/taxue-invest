@@ -421,10 +421,14 @@ def test_normalize_code_keeps_us_ticker_case():
 # ── ③ 链路位置（位置错了不报错，只会静默降级） ──────────────────────────────
 
 def test_us_chain_puts_tencent_before_bitget():
-    # mxds(55) 配置在时是 us 链首（有 us() 能力即入链）；本测试守的是
-    # 富源与兜底的**相对位次**，registry 增删源不应碰它（全量链序在 test_tiingo_source）
+    # v3.8（金融口径收口）：us 默认链为 yfinance > fmp > tencent > tiingo；
+    # bitget（USDT 合成代币价）已移出美股默认快照链。
     chain = route.candidates("us")
-    assert chain.index("yfinance") < chain.index("tencent") < chain.index("bitget")
+    assert "bitget" not in chain, chain
+    if "yfinance" in chain:
+        assert chain.index("yfinance") < chain.index("fmp") < chain.index("tencent") < chain.index("tiingo"), chain
+    else:
+        assert chain.index("fmp") < chain.index("tencent") < chain.index("tiingo"), chain
 
 
 def test_rich_sources_stay_first_for_stock():

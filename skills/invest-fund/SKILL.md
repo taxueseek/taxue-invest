@@ -31,6 +31,12 @@ description: |
 ## 数据与协作
 
 - 取数口径与降级链：`references/data-pipeline.md`（基金快照走 `invest-cli fund`，主路 hithink）
+- 通用深取：`invest-cli intent deep fund <代码>`（盈米诊断 → 妙想基金事实 → 快照链），
+  净值与重仓等结构化事实无需额外配置
+- 垂直深取：`invest-cli intent sfg <代码/名称>`（见基行事，**积分制**）——经理画像、
+  绩效归因、风格漂移、选基排行榜、组合体检这五类妙想没有的能力才用它。
+  上游要标准码（`005827.OF`），本命令自动先搜索解析；组合体检走
+  `invest-cli sfg portfolio-submit` + `--poll`（实测 300-340s）
 - 文档协作（PDF 季报/年报、Excel 持仓表）：`references/doc-processing.md`，声明能力需求由 agent 路由
 - 单只基金调研元提示词（含取数清单与口径红线）：`references/fund-research-prompt.md`
 
@@ -113,8 +119,9 @@ description: |
 **统一走 mx-data 数据层**：
 
 ```bash
+# <mx-data> = mx-data 技能安装目录（与本技能同批安装，路径随安装器而定）
 # 取基金数据
-python3 ~/.agents/skills/mx-data/scripts/get_data.py --type fund --code <代码> --metrics ["nav","manager","holders","holdings"]
+python3 <mx-data>/scripts/get_data.py --type fund --code <代码> --metrics ["nav","manager","holders","holdings"]
 ```
 
 ## 输出模板

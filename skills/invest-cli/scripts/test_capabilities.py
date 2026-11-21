@@ -17,12 +17,16 @@ from cmd_capabilities import YINGMI_CONVERGED, TTSKILL_CONVERGED, converge_statu
 
 
 def test_cli_registers_ttskill_and_capabilities() -> None:
-    """主入口必须注册两个新子命令。"""
+    """主入口必须注册两个新子命令（命令名真源是 command_registry）。"""
+    import invest_cli
+    from command_registry import command_ids
+
     text = (SCRIPTS / "invest_cli.py").read_text(encoding="utf-8")
     assert 'add_parser("ttskill"' in text
     assert 'add_parser("capabilities"' in text
-    assert '"ttskill": cmd_ttskill' in text
-    assert '"capabilities": cmd_capabilities' in text
+    assert {"ttskill", "capabilities"} <= set(command_ids())
+    assert callable(invest_cli.cmd_ttskill)
+    assert callable(invest_cli.cmd_capabilities)
 
 
 def test_cmd_modules_exist_and_export_run() -> None:
@@ -47,6 +51,7 @@ def test_converged_whitelist_semantics() -> None:
     assert converge_status("yingmi", "BatchGetFundNavHistory").startswith("⬜")
     assert TTSKILL_CONVERGED["TTFUND_BASE_INFOS"]
     assert converge_status("ttskill", "TTFUND_BASE_INFOS").startswith("✅")
+    assert converge_status("ttskill", "TTFUND_INDEX_FUND_SELECTION").startswith("✅")
     assert converge_status("ttskill", "TTFUND_MANAGER_INFO").startswith("⬜")
     assert converge_status("ttskill", "ACCOUNT_HOLDING").startswith("🔒")
     assert converge_status("ttskill", "CONDITION_ORDER").startswith("🔒")

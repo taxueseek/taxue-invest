@@ -26,6 +26,8 @@ sources:
     name: 同花顺金融数据服务
     kind: api
     coverage: [stock, fund]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: [stock, fund]
     priority: 60
     env_var: HITHINK_FINANCE_API_KEY
     detect:
@@ -39,6 +41,8 @@ sources:
     name: 东方财富
     kind: api
     coverage: [stock, fund, screen]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: [stock, fund, screen]
     priority: 50
     env_var: EASTMONEY_APIKEY
     detect:
@@ -55,7 +59,15 @@ sources:
     # 服务，单次 1.2s+ 且快照查询只回收盘价简表，tencent 全字段行情 189ms 更适合
     # 链首（修复裸 ticker 适配后数据质量仍不占优，实测同日）。妙想美股能力经
     # `intent mxds` 自然语言入口可达（us() 已对裸 ticker 包装查询模板）。
-    coverage: [stock, fund, screen, bond, index, macro, news, notice]
+    #
+    # stock/fund 于 2026-10-17 移出：c722407 给快照类调用加了「内层 data 必须是
+    # dict」的契约，而妙想这四个工具实测**永远**返回表格信封（600519 / 600519.SH /
+    # 贵州茅台 / 005827 / 易方达蓝筹 全部 ok=False）——即这两条链上的每一次冷调用
+    # 都要白等 2.0~2.7s 再判「未找到」。摘掉 coverage 后它不再进 route，但
+    # `intent mxds` 直调 `mxds.auto()`，能力不受影响。
+    coverage: [screen, bond, index, macro, news, notice]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: [screen]
     priority: 55
     env_var: EM_API_KEY
     detect:
@@ -68,6 +80,8 @@ sources:
     name: Yahoo Finance
     kind: python
     coverage: [us, stock]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: [us, stock]
     priority: 40
     detect:
       type: python
@@ -78,7 +92,11 @@ sources:
     name: Bitget rToken
     kind: api
     coverage: [us]
-    priority: 35
+    # v3.8（金融口径收口）：Bitget 返回的是 USDT 合成代币价，无 PE/PB/ROE/市值，
+    # 不再进入美股默认快照链（route_kinds 置空），避免在股票基本面分析链路中
+    # 返回代币口径价格。适配器保留供显式/测试调用。
+    route_kinds: []
+    priority: 34
     detect:
       type: always
     adapters: [bitget]
@@ -89,6 +107,8 @@ sources:
     # coverage 是语义标签：只暴露 stock()/us()，无 fund()/screen()，
     # 因此不进 fund 与 screen 链。见 sources/tencent.py 顶部关于定位的说明。
     coverage: [stock, us, quote]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: [stock, us]
     # priority 37 是**有意卡在 40 与 35 之间**，不是随手取的数：
     #   · us 链 → [yfinance(40), tencent(37), bitget(35)]
     #     富源 yfinance 仍在主位（能力不掉：腾讯没有营收/净利润/现金流/分析师评级），
@@ -116,10 +136,13 @@ sources:
     name: Tiingo 美股 EOD（官方收盘价/复权历史/估值序列）
     kind: api
     coverage: [us, eod_history]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: [us]
     # priority 36 卡在 tencent(37) 与 bitget(35) 之间，与 tencent 的 37 一样是
     # 有意取的数：免费档无三表无 ROE，tngoLast 是收盘口径（盘中不如腾讯实时）
     # ——上 37 就是能力降级；压 bitget 是官方交易所收盘价 vs 代币价，严格更优。
-    # us 链 → [mxds(55，配了才在), yfinance(40), tencent(37), tiingo(36), bitget(35)]
+    # us 链 → [yfinance(40), tencent(37), tiingo(36), bitget(35)]
+    # （mxds 已于 2026-10-11 移出美股快照链，见上方 mxds 段）
     priority: 36
     env_var: TIINGO_API_KEY
     # 与 fred/eastmoney 同一解析链（env → launchctl → rc → 凭据文件，剥引号）
@@ -137,6 +160,8 @@ sources:
     # 只经 `invest-cli westock <args>` 透传，补的是筹码/龙虎榜/资金流/一致预期/
     # ESG/机构评级/产业链/板块估值/可转债条款等 invest-cli 既有源没有的能力。
     coverage: [chip, moneyflow, rank, consensus, sector, industry_chain, bond_detail]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: []
     priority: 30
     env_var: WESTOCK_BIN
     # 可用性 = 二进制在 + `--help` 真的跑得起来（实测 22ms）。
@@ -150,6 +175,8 @@ sources:
     name: 万得 Wind
     kind: cli
     coverage: [stock, fund, index, bond, news, macro, analytics]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: []
     priority: 80
     env_var: WIND_API_KEY
     # 直连 Wind MCP（不依赖 wind-mcp-skill 的 node CLI）；可用性 = 有 Key
@@ -164,6 +191,8 @@ sources:
     name: 盈米且慢
     kind: api
     coverage: [fund, strategy, wealth, news]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: []
     priority: 70
     # 直连盈米 OpenAPI（不依赖 yingmi-skill-cli）；可用性 = 有 apiKey
     detect:
@@ -179,6 +208,8 @@ sources:
     # coverage 仅指快照链 kind（fund()）；37 个官方业务包全部经
     # `invest-cli ttskill <skill_id>` 透传可达，清单见 `invest-cli capabilities ttskill`。
     coverage: [fund]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: [fund]
     priority: 55
     # 直连官方 gateway（不依赖 ttskill CLI）；可用性 = 官方凭据未过期 + 已装业务包
     detect:
@@ -191,6 +222,8 @@ sources:
     name: argo 财经检索（资讯/舆情/宏观引擎池）
     kind: cli
     coverage: [news, macro]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: []
     priority: 20
     detect:
       type: env_or_file
@@ -200,14 +233,16 @@ sources:
   fmp:
     name: Financial Modeling Prep（美股深取：三表 JSON/TTM 比率/结构化评级/年度预测）
     kind: api
-    # coverage 是语义标签（非快照链 kind）：不暴露 us() 方法，**不进快照链**——
-    # 免费档 250 次/天扛不住日常兜底消耗（一次深取就 3-5 个请求）。与 sec_edgar
-    # 分工：sec=10-K XBRL 原文级（官方免费），fmp=加工好的比率/评级/预测（免费档
-    # 250 次/天 + 30 天 500MB 带宽）。经 `invest-cli fmp <ticker>` 直取。
+    # v3.8（金融口径收口）：priority 38 排在 yfinance(40) 之后、tencent(37) 之前。
+    # us 默认链 → [yfinance(40), fmp(38), tencent(37), tiingo(36)]：
+    # yfinance 不可达时优先由 FMP 承接基本面快照（TTM 比率 + 评级 + 公司概况），
+    # 未配 FMP_API_KEY 或配额耗尽时自动降级到零鉴权 tencent 实时行情与 tiingo 官方 EOD。
     # 免费档边界（2026-09-30 实测）：三表 annual 通、quarterly 402；ratios-ttm 的
     # ROE/ROA=null（要从三表自己算）；estimates 仅 annual；etf-holdings 明确付费墙。
-    coverage: [us_fundamentals, us_estimates, us_rating, dividends]
-    priority: 46
+    coverage: [us, us_fundamentals, us_estimates, us_rating, dividends]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: [us]
+    priority: 38
     env_var: FMP_API_KEY
     # 与 fred/tiingo 同一解析链（env → launchctl → rc → 凭据文件，剥引号）
     detect:
@@ -223,6 +258,8 @@ sources:
     # coverage 为语义标签（非快照链 kind）：不暴露 stock/fund/us/screen 方法，
     # 因此不进 route 快照链；经 `invest-cli sec <ticker>` 直取。
     coverage: [us_fundamentals, filings]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: []
     priority: 45
     detect:
       type: always
@@ -232,6 +269,8 @@ sources:
     name: FRED 宏观时序（净流动性三序列：WALCL/TGA/ON RRP）
     kind: api
     coverage: [macro]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: []
     priority: 25
     env_var: FRED_API_KEY
     # 有 key 走官方 API；无 key 由适配器 detect() 判定为可用（fredgraph.csv 免 key 回退）
@@ -246,6 +285,8 @@ sources:
     name: 易方达指数直通车
     kind: api
     coverage: [fund, index]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: []
     priority: 65
     env_var: INDEX_HUB_API_KEY
     # 直连易方达 Index Hub API；可用性 = 有 Key + api_client.py 已安装
@@ -259,8 +300,50 @@ sources:
     name: 首趋E指
     kind: cli
     coverage: [fund, index, etf_detail, valuation, industry_distribution, wind_rank]
+    # 真正参与 route.fetch 的 kind（展示用的语义标签仍在 coverage）。
+    route_kinds: []
     priority: 63
     detect:
       type: command
       check: etfirst
     adapters: [etfirst]
+
+  sfg:
+    name: 见基行事(seefundgo) 公募基金 MCP
+    kind: api
+    # 定位：公募基金「事实查询 + 组合诊断」面（档案/净值/业绩/风险/持仓穿透/
+    # 行业配置/经理画像/选基筛选/排行榜/ETF 资金流与轮动/组合体检），
+    # 覆盖全市场 14000+ 基金与 6900+ 经理，与既有源能力互补。
+    # **不进快照链**（route_kinds 为空）：由 `invest-cli sfg` 具名直取，
+    # 并在 intent 的基金筛选/组合场景做首选尝试（与 wind/htbr 同一形态）。
+    #
+    # 积分制（2026-11-21 实测）：按次扣积分，余额 0 时**所有工具**被拒
+    # （含 sfg_help），报错文案「积分余额不足：当前 0，本次调用需 1 分」。
+    # 因此不能当无配额墙的通用主渠道——通用取数走 mxds（妙想，东财自有、
+    # 无配额），本源只承接妙想没有的垂直能力：经理画像、绩效归因、风格漂移、
+    # 选基排行榜、组合体检。路由兜底已按此分工排定（见 cmd_intent）。
+    coverage: [fund, etf, index, manager, screen, ranking, portfolio, market]
+    route_kinds: []
+    priority: 64
+    env_var: SFG_MCP_TOKEN
+    detect:
+      type: env_or_file
+      files:
+        - ~/.config/invest-cli/sfg.env
+    adapters: [sfg]
+
+  htbr:
+    name: 华泰柏瑞ETF（聚源底座，事实查询面）
+    kind: api
+    coverage: [fund, index, etf, fund_manager, industry_distribution, earning_forecast, capital_flow]
+    # 不进 route.fetch 快照链：htbr 是「事实查询」面（72 个接口，含经理季报观点、
+    # 申万一级行业穿透、指数盈利预测等既有源没有的能力），由 `invest-cli htbr` 直取。
+    route_kinds: []
+    priority: 62
+    # 凭据唯一来源是 htbr 包内的 ~/.htbr/credentials.json（其 config.py 读取，
+    # 不读环境变量 HTBR_API_KEY）；skill 目录按 workbuddy/agents/claude 顺序发现。
+    detect:
+      type: env_or_file
+      files:
+        - ~/.htbr/credentials.json
+    adapters: [htbr]

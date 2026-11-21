@@ -4,8 +4,8 @@
 
 这个工具帮你三件事：**看清投的是什么，判断值不值得投，确定价格合不合适**。
 
-**支持 17 个数据源（API）与 11 个分析方法论**：
-- **数据源**：免 Key 源（腾讯行情 / SEC EDGAR / FRED / yfinance）+ 配置启用源（同花顺 / 东方财富 / 妙想 / FMP / Tiingo / Wind / 盈米 / 天天基金官方 ttskill）+ 长尾能力（腾讯微证券 40+ 子命令）
+**支持一组可插拔数据源（API）与 11 个分析方法论**：
+- **数据源**：免 Key 源（腾讯行情 / SEC EDGAR / FRED / yfinance）+ 配置启用源（同花顺 / 东方财富 / 妙想 / FMP / Tiingo / Wind / 盈米 / 见基行事 MCP / 天天基金官方 ttskill / 易方达指数直通车）+ 长尾能力（腾讯微证券 40+ 子命令 / 华泰柏瑞 ETF）
 - **方法论**：覆盖个股、基金、选基、单一资产（债/转债/商品/REITs）、资产配置、风险管理、企业深度、宏观环境、机构级产出、多视角会诊
 
 ---
@@ -30,7 +30,7 @@ npx skills add taxueseek/taxue-invest
 
 ## 支持的数据源（API）
 
-装上就能用**判断框架**。不配任何 API 也能分析（公开检索 + 你提供的材料 + 免 Key 取数通道）。共 **17 个数据源**（下表为常用源），按启用方式分三档；取数与下判断分离：
+装上就能用**判断框架**。不配任何 API 也能分析（公开检索 + 你提供的材料 + 免 Key 取数通道）。数据源清单以 `data-sources.yaml` 为唯一真源（下表为常用源；全量与实时可用性跑 `invest-cli datasources`），按启用方式分三档；取数与下判断分离：
 
 ### 免 Key（装上即用）
 
@@ -52,7 +52,8 @@ npx skills add taxueseek/taxue-invest
 | **Tiingo** | `TIINGO_API_KEY` | `invest-cli us <代码> --history` 美股 EOD 历史 |
 | **Wind**（万得） | `WIND_API_KEY` | 机构级数据，`invest-cli wind` 透传 |
 | **盈米且慢** | `~/.yingmi-skill-cli/config.json` | 基金诊断/组合/配置方案（`intent deep fund` / `portfolio` / `plan`） |
-| **天天基金官方 ttskill** | 官方登录 | `fund` 快照深取补充（同类分位/机构占比/经理在管） |
+| **见基行事（seefundgo）MCP** | `SFG_MCP_TOKEN` | 公募基金垂直深取（积分制）：多因子选基、经理画像、归因、异步组合体检（`invest-cli sfg` / `intent sfg`） |
+| **天天基金官方 ttskill** | 官方登录 | `fund` 快照深取补充（同类分位/机构占比/经理在管）与 `research etf-rank` 指数横评 |
 | [argo](https://github.com/taxueseek/argo) | 安装 argo | `invest-cli info` 资讯/舆情、宏观检索兜底（多数免 Key，省结构化源配额） |
 
 ### 长尾能力
@@ -178,51 +179,26 @@ npx skills add taxueseek/taxue-invest
 
 ---
 
-## v3.1 增量（本版）：数据源适配器迭代 + 测试扩充 + 美股支持
+## v3.2.2 增量（本版）：金融口径收口 + 新源定编 + 单源治理 + 验收自动化
 
-这一版在 v3.0 三层架构基础上，重点强化了数据源适配、测试覆盖和美股支持。
+从 v3.1 到 v3.2.2 完成多轮架构与金融口径治理，全面收口数据源编排、安全底座与自动化门禁。
 
-**相对上一版改进/新增能力：**
-- **数据源适配器全面迭代**：eastmoney / hithink / tencent / tiingo / wind / mxds / ttskill / etfirst 全部更新，路由逻辑增强（route.py / index_hub.py / env.py）
-- **测试覆盖扩充**：新增 8 个测试文件（test_adapter_wiring / test_doc_source_truth / test_envelope / test_module_size_gate / test_mx_data_router / test_output_budget / test_py39_compat / test_skill_doc_budget / test_static_imports），8 个已有测试文件更新
-- **美股支持优化**：invest-stock / mx-data SKILL.md 增强美股用法说明，路由表扩充「季报」「财报」「研报」关键词
-- **文档与工具**：invest-cli/docs/INDEX.md（文档索引）、两份性能治理报告、check.py（工具脚本）、requirements-dev.txt（开发依赖）
-- **版本号**：3.0 → 3.1
+**相对 v3.1 改进与新增能力：**
+- **金融口径与跨资产路由收口**：美股默认快照链改为 `yfinance > fmp > tencent > tiingo`（`bitget` USDT 代币价移出默认股票快照链）；港股链优化为 `eastmoney > tencent > yfinance`；`intent macro` 按中美地区分流；`intent deep bond` 补齐 `wind → mxds` 降级链；`intent deep fund` 定型为 `盈米诊断 → route 结构化快照 → 妙想兜底`
+- **新增数据源与能力发现**：接入见基行事（seefundgo）公募基金 MCP（`invest-cli sfg` / `intent sfg`，积分制，专攻多因子选基与异步组合体检 420s 轮询，纯关键词搜基金直走盈米省积分）与华泰柏瑞 ETF（`invest-cli htbr`）；`capabilities` 覆盖 `yingmi`/`ttskill`/`westock`/`sfg`/`htbr`；新增 `research etf-rank` 指数基金横评与 `invest-recap-card` 复盘卡片
+- **单源治理与安全底座**：SSRF 四层闸统一至 `sources/_http.py`（AST 门禁锁死）；信封与健康状态词收口至 `sources/envelope.py`；命令与 DSH 插件元数据收口至 `command_registry.py`；新增 `INVEST_CLI_DISABLE_SOURCES` 停用集与 DSH 面板开关墙；`mx-data` 场景状态机单源化；依赖收口至 `pyproject.toml` + `uv.lock`
+- **验收自动化与可观测性**：新增 `invest-cli doctor` 六面自检、运行时 `usage_log` 账本与空结果基线预警、`check.py` 全量门禁（770 条 Python 单测 + 30 条 DSH 插件单测 + ruff F821/F401 + 版本记账与派生校验）
 
 **默认关闭功能的打开方式：**
-- `invest/references/mode.local.yaml`（本机推理档位配置）
+- live 联网用例：`pytest -m live`（个别另有 `INVEST_LIVE=1` 二道门）
+- 停用指定数据源：`INVEST_CLI_DISABLE_SOURCES=src1,src2`（或在 DSH 插件面板勾选）
+- 关闭运行时账本：`INVEST_CLI_USAGE_LOG=0`；关闭解释器自动升级：`MX_DATA_NO_REEXEC=1`
 
 **相关依赖：**
-- invest-cli 需要 yfinance（美股数据）
-- invest-cli 需要 Python 3.9+
+- Python 3.9+（`uv sync` 或 `pip install -r skills/invest-cli/requirements.txt`，含 PyYAML / yfinance / cryptography）
+- 可选：`openpyxl`（`tenure --excel` 导出，缺失时自动降级 CSV）、Node.js 18+（DSH 插件）
 
----
-
-## v3.0 增量（历史版本）：三层架构 + 推理档位
-
-这一版把 invest 系列从「一堆并列的技能」改成**分层架构**，并让「要不要出报告」变成**按需**而不是默认。
-
-### 三层架构：方法论 / 数据 / 呈现分离
-
-| 层 | 职责 | 组件 |
-|:---|:-----|:-----|
-| **方法论层** | 分析框架、决策逻辑 | `invest` / `invest-stock` / `invest-fund` / `invest-asset` / `invest-analyst` / `invest-enterprise` / `invest-allocation` / `invest-pool` / `invest-risk` / `invest-discuss` / `invest-macro` |
-| **数据层** | 取数、清洗、结构化 | `mx-data`（`invest-cli` 的统一封装，不重复造 auth / 路由 / 降级） |
-| **呈现层** | 报告结构与模板 | `mx-templates`（10 个报告模板，`{{变量}}` 占位，不绑定数据源） |
-
-好处是三层各自可替换：方法论不写「怎么取数」，模板不写「数据从哪来」，数据层不写「怎么分析」。
-
-### 推理档位：低 / 中 / 高，默认低档
-
-不是每个问题都要一份报告。「推荐一只短债产品」和「出一份 IC 报告」不该走同一条路。现在分三档：
-
-| 档位 | 取数次数 | 输出 | 触发 |
-|:-----|:--------|:-----|:-----|
-| **低**（默认） | ≤ 2 次 | 终端简洁结论（1-5 行核心指标 + 判断） | 简单查询、推荐、筛选 |
-| **中** | ≤ 4 次 | 要点列表 + 简要分析 | 用户说「详细」「全面」「深入」 |
-| **高** | 不限 | 完整报告（`mx-templates` 渲染） | 用户说「报告」「IC」「深度分析」「研报」 |
-
-公开默认**低档**（快、省、够用）；本机可用 `invest/references/mode.local.yaml` 覆盖为高档，不影响公开默认。
+**v3.1（数据源适配器迭代 + 测试扩充 + 美股支持）与 v3.0（三层架构 + 推理档位）的完整增量说明见下方 Version History 与 CHANGELOG。**
 
 ### 新增三个方法论技能
 
@@ -539,6 +515,14 @@ skills/
 
 | 版本 | 日期 | 变更内容 |
 |:-----|:-----|:---------|
+| v3.2.2 | 2026-11 | 公开合版发布（汇总 v3.2–v3.8.2）：金融口径收口（美股 `yfinance > fmp > tencent > tiingo`，移出 `bitget` 代币价；港股 `eastmoney > tencent > yfinance`；宏观中美分流；债券 `wind → mxds` 兜底）；接入见基行事（seefundgo）公募基金 MCP（积分制，多因子选基/组合体检 420s 轮询，纯关键词走盈米省积分）与 `htbr`；`capabilities` 纳入 `sfg`/`htbr`；新增 `doctor`、`usage_log`、SSRF AST 门禁、`command_registry` 单源、DSH 开关墙与 `uv.lock`；测试 770 passed + DSH 插件 30 passed |
+| v3.7 | 2026-11 | 隐式状态机显式化（只改结构与判据、不加功能）：**P1 场景状态机单源**——`mx-data/scripts/query_router.py` 的 `SCENARIO_COMMANDS` 此前只承载展示名与命令文本，argv 分支在 `get_data._scenario_cmd()`、取数映射在 `get_data._FETCHERS`，同一场景散在三处；现每个场景在一个表项里定义 `name`/`argv`（含占位）/`route_kind`，两处派生逻辑删除，新增 3 条用例钉住「表 = argv = 取数路由」一致。**P2 阶段编号收口**——`invest-macro` 维度 A/B/D/C 与 `invest-risk` 小节 1/2/5/3/4 的编号乱序重排为 A/B/C/D 与 1/2/3/4/5，正文未改。**P3 失效文档链接清理**——`invest-cli/docs/INDEX.md` 的 15 条链接指向已归档报告，改为指向归档目录清单，`docs/` 只留 3 份现行文档。**P4 文档表对齐代码表**——`mx-data/SKILL.md` 场景表删掉代码里不存在的 htbr 行，`test_doc_source_truth` 断言改为按 `argv` 首词校验。测试 726→729 |
+| v3.6 | 2026-11 | argo v2.13.0 思路迁移五处收口（只改结构与判据、不加功能）：**P0 SSRF 旁路收口**——eastmoney 的 `requests.post` 与 mxds 的裸 `http.client` 并入共享安全闸新增的 `guarded_request`（POST 形态），此前 DNS 公网校验与禁重定向对二者完全失效；`test_http_gate.py` 用 AST 扫描钉死「生产代码不得出现 requests/http.client/裸 urlopen」。**P1 状态真源**——新增 `sources/envelope.py` 收口 5 份重复 `_envelope` 与 doctor 的 27 处状态字面量（`HEALTH_*` 常量 + `is_blocking()`）。**P2 账本交付条数**——成功记录加 `count`/`empty`，doctor 展示「交付：hithink 1 条」，可区分「慢源拖尾」与「唯一出货」。**P3 空结果基线破位**——`usage_stats` 新增 `suspected_stale`（历史曾非空 + 连续 ≥3 次空 + 跨 ≥2 查询），零新增请求。**P4 文档分层**——14 份过程报告归档 `docs-local/archive/`，`docs/` 只留现行文档。**P5 依赖收口到 uv**——`pyproject.toml` + `uv.lock` + `.python-version`，requirements 降级为派生清单并挂 `check.py --check` 门禁。测试 706→726 |
+| v3.5 | 2026-11 | 数据源选择能力三段式（Argo 同构）：引擎侧原语 `INVEST_CLI_DISABLE_SOURCES`（candidates/pick/chains 一处过滤三层生效，具名直调不受影响，`datasources` 报停用态）→ 插件 config `disabledSources`（registry 单源派生 + Schema + spawn 注入 env，invest-cli 每次调用新进程、改完即时生效）→ 面板「数据源拓扑」升级为 17 源 checkbox 开关墙（删除硬编码的失真链序，链序归 `datasources` 运行时自报）；命令注册表启动校验（声明无实现给可读报错，替代裸 KeyError）；第十轮补记报告 |
+| v3.4 | 2026-11 | 命令单一注册表：`command_registry.py` 成为命令/分类/预算/直取源唯一真源，dispatch 从它派生、插件产物由 `sync_registry.py` 生成、`test_registry` 钉「注册表=parser=dispatch=插件产物」四方相等，`check.py` 增生成物过期门禁；直取命令（wind/yingmi/ttskill/htbr/westock/sec/fmp）写 `scope=direct` 账本，doctor/datasources 报直取连续失败；FMP 补 us() 适配（priority 34 链尾兜底，仅前四源全败才烧配额）；`fund --analytics` 装配合并 −55 行；research --limit 按场景分默认值 |
+| v3.3 | 2026-11 | 运行时事实层：`route.fetch` 默认路径每次真实取数记一条 `usage_log`（成败/耗时/降级链/逐源原因），CLI 入口再记一条命令级事实（rc/耗时，诊断命令自身不记）；`doctor` 的 usage 检查分源级与命令级报告（24h 失败率、同一链尾部连续失败、降级次数），`datasources` 尾部展示同一份 24h 汇总；账本 1MiB 回缩、失败静默、`INVEST_CLI_USAGE_LOG=0` 可关。补上「静态测试看不见运行态」这一层；插件补齐 `htbr` / `research` / `doctor` 三个命令（21→24）与 htbr 拓扑、`research` 给 180s 分档预算，命令面改由 CLI dispatch 真源校验，预算表不再允许孤儿项；`KIND_FNS` 从 9 种收敛到配置里真实有链的 4 种；文档去掉写死的源数量与失真的链序，改由 `datasources` 运行时给；新增 `research etf-rank`（按真实回包接线：同指数基金横评、成分股、指数估值；评分口径与 `risk_note` 原样透出）。接入 htbr 华泰柏瑞ETF（透传官方 htbr-etf-skill，72 接口事实查询面：经理 20 + 指数 13 全量导航 + 分辨率入口，暂停接口不进导航）；SSRF 四层闸并口 `_http` 单出口；体积门禁固定红线 1400；门闩表/场景表删源名列（源名只归 yaml 与运行时输出）；发布链修复（`--exclude /scripts` 根锚定、发布前挂 check 与插件单测、根级 packages/dsh-plugin 软链、check_public_sync 对账门禁）；check.py 新增版本记账门禁；README 增设 Feedback 入口 |
+| v3.2 | 2026-10 | 工程底座收口：新增 `invest-cli doctor` 一条命令查数据源/缓存/解释器/注册软链/DSH 副本漂移五面（首跑即抓到 license 漂移）；运行时统一 venv 3.14（EOL 的 3.9 退出热路径，公开仓兼容下限仍为 3.9+）；发布链固化为 `scripts/publish-public.sh`（镜像 + 内置脱敏门）；pre-commit 门禁自动跑 check.py；7 条联网用例默认排除（`pytest -m live`）；`report` 产物迁出仓库；DSH `sync-local.sh`；invest-cli SKILL.md 删掉追不上 17 源 yaml 的静态数据源表 |
+| v3.1 | 2026-10 | 数据源适配器迭代（eastmoney/hithink/tencent/tiingo/wind/mxds/ttskill/etfirst）与路由加固；新增 8 个测试文件（doc-source-truth / envelope / module-size-gate / py39-compat / static-imports 等守卫）；美股用法文档；`docs/INDEX.md`、`check.py`、`requirements-dev.txt` |
 | v3.0 | 2026-10 | 三层架构重构（方法论 `invest-*` / 数据 `mx-data` / 呈现 `mx-templates`），消除重复的 auth 与报告模板；新增推理档位（低/中/高，公开默认低档，报告按需）；新增 invest-pool / invest-risk / invest-enterprise 三个方法论技能；invest-cli 同步 v2.8→v2.9 及十月演进（`tenure` / `report` / `research fund-rank` 等新命令，妙想/fmp/tiingo 等新源，热路径再降，回归 440→513） |
 | v2.7 | 2026-09 | 并入腾讯行情（零鉴权）与腾讯微证券 CLI：新增 `quote`（多标的实时行情，三市场 186ms，对照旧路径 7.7s，约 41x）/`kline`/`westock` 三命令；热路径去白付（缓存命中 `fund` 0.09→0.03s、`stock` 0.08→0.05s、`us` 0.05→0.03s）；修 19 项缺陷（代码域冒牌数据/跨源猜测/可用性判据漂移/号码重叠静默串号/限流通告当数据等）；移植时不继承 17 类缺陷；回归 237→317 |
 | v2.6 | 2026-09 | 去外部 CLI 依赖：天天基金/盈米/Wind 三源由 `subprocess → CLI` 改为直连 API（认证沿用官方）；隔离实测 invoke 0.374→0.237s、yingmi 0.458→0.244s、wind 0.591→0.426s；修自然语言持仓/配置路径从未可用、凭据重复读取等；回归 171→192 |
@@ -567,8 +551,8 @@ Buy funds like hiring a steward, buy stocks like partnering in business. Don't t
 
 This tool helps you with three things: **see what you're investing in, judge whether it's worth it, determine if the price is right**.
 
-**17 data sources (APIs) and 11 analysis methodologies**:
-- **Data sources**: keyless (Tencent quotes / SEC EDGAR / FRED / yfinance) + config-enabled (Hithink / Eastmoney / Miaoxiang / FMP / Tiingo / Wind / YingMi / TTFund official ttskill) + long-tail (Tencent WeStock 40+ subcommands)
+**Pluggable data sources (APIs) and 11 analysis methodologies**:
+- **Data sources**: keyless (Tencent quotes / SEC EDGAR / FRED / yfinance) + config-enabled (Hithink / Eastmoney / Miaoxiang / FMP / Tiingo / Wind / YingMi / SeefundGo MCP / TTFund official ttskill / E Fund Index Hub) + long-tail (Tencent WeStock 40+ subcommands / HTBR ETF)
 - **Methodologies**: stocks, funds, fund picking, single assets (bonds/convertibles/commodities/REITs), allocation, risk, company deep-dive, macro, institutional output, multi-perspective review
 
 ---
@@ -593,7 +577,7 @@ The system automatically identifies what you want to analyze and routes to the c
 
 ## Supported data sources (APIs)
 
-The **judgment framework works immediately** without any API (public search + your own materials + keyless fetch paths). **17 sources** (main ones below), grouped by how they unlock; fetch and judgment are separate:
+The **judgment framework works immediately** without any API (public search + your own materials + keyless fetch paths). **The source list is defined by `data-sources.yaml`** (main ones below; run `invest-cli datasources` for runtime truth), grouped by how they unlock; fetch and judgment are separate:
 
 ### Keyless (install and go)
 
@@ -615,7 +599,8 @@ The **judgment framework works immediately** without any API (public search + yo
 | **Tiingo** | `TIINGO_API_KEY` | `invest-cli us <code> --history` US EOD history |
 | **Wind** | `WIND_API_KEY` | Institutional-grade data, `invest-cli wind` passthrough |
 | **YingMi** | `~/.yingmi-skill-cli/config.json` | Fund/portfolio diagnosis and plans (`intent deep fund` / `portfolio` / `plan`) |
-| **TTFund official ttskill** | official login | Extra fund fields (peer percentile / institutional ratio / manager AUM) |
+| **SeefundGo MCP** | `SFG_MCP_TOKEN` | Mutual-fund vertical deep-dive (credit-based): multi-factor screening, manager profile, attribution, async portfolio check (`invest-cli sfg` / `intent sfg`) |
+| **TTFund official ttskill** | official login | Extra fund fields (peer percentile / institutional ratio / manager AUM) and `research etf-rank` |
 | [argo](https://github.com/taxueseek/argo) | install argo | `invest-cli info` news/sentiment, macro retrieval fallback (mostly keyless) |
 
 ### Long-tail
@@ -795,25 +780,7 @@ Add `--json` for structured output an agent can parse; omit it for a terminal ta
 
 ## Recent Improvements & Performance
 
-### v3.1: data source adapter iteration + test coverage expansion + US stock support
-
-This version builds on v3.0's three-layer architecture, focusing on data source adapter iteration, test coverage expansion, and US stock support.
-
-**Improvements over the previous version:**
-- **Data source adapters fully iterated**: eastmoney / hithink / tencent / tiingo / wind / mxds / ttskill / etfirst all updated; routing logic enhanced (route.py / index_hub.py / env.py)
-- **Test coverage expanded**: 8 new test files (test_adapter_wiring / test_doc_source_truth / test_envelope / test_module_size_gate / test_mx_data_router / test_output_budget / test_py39_compat / test_skill_doc_budget / test_static_imports), 8 existing test files updated
-- **US stock support optimized**: invest-stock / mx-data SKILL.md enhanced with US stock usage instructions; routing table expanded with "季报" / "财报" / "研报" keywords
-- **Documentation and tools**: invest-cli/docs/INDEX.md (documentation index), two performance governance reports, check.py (utility script), requirements-dev.txt (development dependencies)
-- **Version**: 3.0 → 3.1
-
-**Opt-in features:**
-- `invest/references/mode.local.yaml` (local inference tier configuration)
-
-**Dependencies:**
-- invest-cli requires yfinance (US stock data)
-- invest-cli requires Python 3.9+
-
-### v3.0 (historical): three-layer architecture + inference tiers
+### v3.0: three-layer architecture + inference tiers
 
 This version turns the invest series from "a pile of parallel skills" into a **layered architecture**, and makes "produce a report" **on-demand** instead of the default.
 
@@ -954,10 +921,28 @@ skills/
 
 ---
 
+## Feedback
+
+Issues are the fastest channel and are actively watched: <https://github.com/taxueseek/taxue-invest/issues>.
+
+- **Bug report**: the command you ran, expected vs actual, and the JSON output if any.
+- **Data-source failure**: run `invest-cli doctor` first and attach its output — it reports per-source availability, cache, interpreter and DSH-copy drift in one pass.
+- **Feature requests & methodology feedback** are equally welcome; for larger changes, open an issue before the PR.
+
+---
+
 ## Version History
 
 | Version | Date | Changes |
 |:--------|:-----|:--------|
+| v3.2.2 | 2026-11 | Public release rollup (v3.2–v3.8.2): financial-caliber hardening (US chain `yfinance > fmp > tencent > tiingo`, `bitget` synthetic rToken removed from default equity chain; HK `eastmoney > tencent > yfinance`; US/CN macro split; bond `wind → mxds` fallback); added SeefundGo Fund MCP (credit-based, multi-factor screening & 420s async portfolio check, plain keywords route to YingMi to save credits) and HTBR ETF; `capabilities` expanded to `sfg`/`htbr`; added `doctor`, `usage_log`, SSRF AST gate, single-source `command_registry`, DSH toggle wall, and `uv.lock`; 770 Python tests + 30 DSH plugin tests passing |
+| v3.7 | 2026-11 | Implicit state machines made explicit (structure and criteria only, no new features): **P1 scenario state machine single-source** — `mx-data/scripts/query_router.py`'s `SCENARIO_COMMANDS` previously held only display names and command text, while argv branching lived in `get_data._scenario_cmd()` and fetch mapping in `get_data._FETCHERS`, so one scenario's state was scattered across three places; each scenario now defines `name`/`argv` (with placeholders)/`route_kind` in a single table entry, both derivation bodies are deleted, and 3 new tests pin "table = argv = fetch route". **P2 stage-number cleanup** — `invest-macro`'s A/B/D/C dimension order and `invest-risk`'s 1/2/5/3/4 section order are renumbered to A/B/C/D and 1/2/3/4/5; body text unchanged. **P3 stale doc links removed** — 15 links in `invest-cli/docs/INDEX.md` pointed at archived reports; they now point at the archive index, leaving 3 live docs in `docs/`. **P4 doc table aligned to code table** — the htbr row (absent from code) is dropped from `mx-data/SKILL.md`'s scenario table, and `test_doc_source_truth` now checks the `argv` head word. Tests 726→729 |
+| v3.6 | 2026-11 | Five Argo-v2.13.0-aligned structural fixes (no new features): **P0 SSRF bypass closed** — eastmoney's `requests.post` and mxds's raw `http.client` now go through the shared gate's new `guarded_request` (POST form); previously DNS public-address checks and redirect blocking did not apply to either; `test_http_gate.py` AST-scans to pin "no requests/http.client/raw urlopen in production code". **P1 state single-source** — new `sources/envelope.py` collapses 5 duplicate `_envelope` implementations and doctor's 27 status literals (`HEALTH_*` constants + `is_blocking()`). **P2 ledger delivery counts** — success records gain `count`/`empty`; doctor shows "delivered: hithink 1", distinguishing "slow tail" from "sole supplier". **P3 empty-result baseline break** — `usage_stats` gains `suspected_stale` (ever non-empty + ≥3 consecutive empties + ≥2 distinct queries), zero extra requests. **P4 doc layering** — 14 process reports archived to `docs-local/archive/`, `docs/` keeps only live docs. **P5 dependency uv lock** — `pyproject.toml` + `uv.lock` + `.python-version`; requirements demoted to derived manifests with a `check.py --check` gate. Tests 706→726 |
+| v3.5 | 2026-11 | Per-source selection, built as three Argo-aligned layers: engine primitive `INVEST_CLI_DISABLE_SOURCES` (filtered once in candidates, effective across pick/chains; named direct calls unaffected; `datasources` reports disabled state) → plugin config `disabledSources` (registry-derived defaults + Schema + spawn env injection; the CLI runs a fresh process per call, so changes apply immediately) → panel "Sources" tab upgraded from a read-only table to a 17-source checkbox wall (stale hard-coded chains removed; live chain order belongs to `datasources`); command-registry startup validation (readable error instead of raw KeyError); round-10 retrospective report |
+| v3.4 | 2026-11 | Single command registry: `command_registry.py` as the sole source for commands/categories/timeouts/output budgets/direct sources; dispatch derived from it, plugin artifacts generated by `sync_registry.py`, `test_registry` pins the four-way equality, `check.py` gains a generated-artifact staleness gate; direct-call commands (wind/yingmi/ttskill/htbr/westock/sec/fmp) logged as `scope=direct` ledger records with per-source failure reporting; FMP added as us() tail fallback (priority 34, quota spent only after all four earlier sources fail); `fund --analytics` assembly merged (−55 lines); research --limit scene-specific defaults |
+| v3.3 | 2026-11 | Runtime evidence layer: every real fetch logs one `usage_log` record on the `route.fetch` default path (success/elapsed/fallback chain/per-source reasons; cache hits and input-layer rejections excluded), plus one command-level record at the CLI entry; `doctor` and `datasources` read the same 24h summary; `KIND_FNS` 9→4 (empty-chain fake promises removed, pinned to the yaml union). HTBR ETF facts source integrated (passthrough of the official htbr-etf-skill: 72 interfaces, manager ×20 + index ×13 navigation, resolution entry, paused endpoints excluded); SSRF gate merged into `_http` single exit; module-size gate fixed at 1400; mapping tables drop source columns (sources live only in data-sources.yaml and runtime output); publish chain fixed (rooted `--exclude /scripts`, pre-publish gates, root packages/dsh-plugin symlink, check_public_sync reconciliation gate); version-accounting gate in check.py; README Feedback section; `research etf-rank` (same-index fund comparison wired from real responses) |
+| v3.2 | 2026-10 | Engineering hardening: new `invest-cli doctor` one-command health check (sources/cache/interpreters/symlinks/DSH-copy drift, caught a real license drift on first run); runtime unified on venv 3.14 via auto re-exec (EOL 3.9 out of the hot path, LibreSSL warning gone; public Python 3.9+ floor unchanged); publish pipeline fixed into `scripts/publish-public.sh` (mirror + privacy gate, no more ad-hoc subtree pushes); pre-commit hook runs check.py on invest-path commits; 7 live network tests excluded by default (`pytest -m live`); `report` output moved to state dir; DSH sync-local.sh; stale source table dropped from SKILL.md (runtime truth = `datasources`) |
+| v3.1 | 2026-10 | Data-source adapter iteration (eastmoney/hithink/tencent/tiingo/wind/mxds/ttskill/etfirst) with routing hardening; 8 new test files (doc-source-truth / envelope / module-size-gate / py39-compat / static-imports guards); US-stock usage docs; docs/INDEX.md, check.py, requirements-dev.txt |
 | v3.0 | 2026-10 | Three-layer refactor (methodology `invest-*` / data `mx-data` / presentation `mx-templates`), removing duplicated auth and report templates; inference tiers (low/medium/high, public default low, report on demand); three new methodology skills invest-pool / invest-risk / invest-enterprise; invest-cli synced through v2.8→v2.9 and October work (new `tenure` / `report` / `research fund-rank` commands; Miaoxiang/fmp/tiingo sources; hot path faster again; guards 440→513) |
 | v2.7 | 2026-09 | Tencent quotes (keyless) and Tencent WeStock CLI merged: new `quote` (multi-symbol real-time, three markets in 186ms vs 7.7s on the old path, ~41x) / `kline` / `westock` commands; hot-path waste removed (cache hit: `fund` 0.09→0.03s, `stock` 0.08→0.05s, `us` 0.05→0.03s); 19 defects fixed (wrong-domain fake data / cross-source guessing / availability-criteria drift / silent symbol overlap / rate-limit notice as data); 17 classes not inherited when porting; guards 237→317 |
 | v2.6 | 2026-09 | External-CLI dependency removed: TTFund / YingMi / Wind moved from `subprocess → CLI` to direct API calls (same official auth); isolated timings invoke 0.374→0.237s, yingmi 0.458→0.244s, wind 0.591→0.426s; fixed the natural-language portfolio/plan path that never worked; guards 171→192 |

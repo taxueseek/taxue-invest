@@ -11,6 +11,7 @@ hithink（同花顺，自带主路，费用明细全）→ ttskill（官方可�
 - 首个成功即用，整单回退，不混字段（route.fetch 保证）
 - ttskill 登录态失效时 detect 探测不过，自动跳过；恢复：终端跑 `ttskill login`，用户扫码后重试
 - ttskill 优势：风险族（夏普/波动/回撤+同类排名）、阶段涨幅同类分位、经理解析（代表作/在管列表）；短板：管理费/托管费不在返回中，费率分析需 f10 档案页补查并标注来源
+- P2 取数顺序（防重复）：先 `invest-cli fund <代码>`（快照链内已并行 BASE+HOLDING），经理画像不够再补 `ttskill TTFUND_MANAGER_INFO`；不许快照与画像各查一遍全量
 
 ## 调用矩阵（适配器内部已封装；分析场景一律走 invest-cli，直连仅作口径参考）
 
@@ -40,6 +41,19 @@ hithink（同花顺，自带主路，费用明细全）→ ttskill（官方可�
 **规模**：`ENDNAV` 单位是元（6777001473.91 = 67.77 亿），一律 ÷1e8。
 
 **经理**：BASE 的 `fund_profile_overview.JJJL`（可含多人，逗号分隔，取首位为主经理）；深查用 `TTFUND_MANAGER_INFO`（响应 `body.data`）：`manager_profile.{representative_fund_code/name 代表作, years_of_experience_days, total_aum(元), current_fund_count}`；在管列表 `managed_funds[].{FCODE, SHORTNAME, FTYPE, FEMPDATE 任职起始, TOTALDAYS 管理天数, ENDNAV, SYL_1N, RANKY}`。
+
+## 外部基准映射（用户点名指数时用）
+
+| 用户说法 | --benchmark 取值 | 备注 |
+|---|---|---|
+| 偏股混合基金指数 / 万得偏股混合 | 885001.WI | 实测直连 Wind 可取，基期对齐 tenure 口径 |
+| 沪深300 | 000300.SH |  |
+| 中证500 | 000905.SH |  |
+| 中证800 | 000906.SH |  |
+
+例：`invest-cli tenure 001437 --manager 武阳 --benchmark 885001.WI`
+基期对齐 tenure 口径（任职日前一交易日；成立即任职取成立日）。
+校验：`wind.index_series("<代码>", begin, end)` 同基期复算，偏差 >0.05pct 必须暴露。
 
 ## 判定阈值速查（服务三关，绝对阈值 × 同类分位交叉验证）
 

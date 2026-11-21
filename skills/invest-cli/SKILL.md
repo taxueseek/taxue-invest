@@ -9,21 +9,11 @@ description: |
   命令入口：`invest-cli stock 600519`（PATH 无 invest-cli 时兜底：`"$HOME/.local/bin/invest-cli" stock 600519`——wrapper 优先用 skill 自带 venv，含 yfinance）
 ---
 
-## 完整触发条件（原始 description）
-
-投资分析 CLI — 数据获取 + 分析框架一体化，dual-mode 运行。 触发：「/cli」「/投资cli」「invest cli」「终端分析」「命令行分析」 或：「用cli分析」「终端查一下」「命令行看看」 命令入口：invest-cli（兜底脚本见下）
-
-
 # invest-cli — 投资分析 CLI
 
 ## 定位
 
-现有 invest 系列 skill 只定义"怎么想"（分析框架），数据靠 web search。
-invest-cli 补充"怎么取"（数据获取），把 CLI 脚本和分析框架串起来。
-
-**dual-mode**：
-- Skill 触发 → 调用 CLI 脚本（`--json`）→ 用 invest 系列框架解读 → 输出完整分析报告
-- 终端直接运行 → 输出表格快照
+invest 系列 skill 定义"怎么想"（分析框架），invest-cli 负责"怎么取"（数据获取）。两者不是替代关系：明确说「/cli」或要终端取数时走 invest-cli，否则走 invest 系列（路由见 `invest/SKILL.md`）。
 
 **入口约定**：优先 `invest-cli` 命令（PATH，wrapper 在 `~/.local/bin/`）；PATH 无该命令时用 `"$HOME/.local/bin/invest-cli"` 兜底。不要绕过 wrapper 直接 `python3` 裸跑系统解释器——那样会丢掉 venv 里的 yfinance，美股路径从全量快照依次降级为腾讯行情 → Tiingo EOD → Bitget rToken。
 
@@ -33,6 +23,19 @@ invest-cli 补充"怎么取"（数据获取），把 CLI 脚本和分析框架�
 2. 调用对应子命令，`--json` 获取结构化数据
 3. 将 JSON 数据传给 invest 系列分析框架
 4. 输出完整分析报告
+
+不带 `--json` 直接跑同一条命令 = 终端模式，输出表格快照（样例见文末「终端直接运行示例」）。
+
+## 输出契约（给 agent）
+
+- **默认 `--json` 保持各命令原形状**（历史原因有 6+ 种：裸载荷 / `{ok,source,data,error}` / `{data}` / 源名字典）。
+  要「一种形状解析」时加 **`--envelope`**（写在子命令前后都行），恒得
+  `{ok, source, data, error, meta}`；失败原因取 stderr 尾部，而不是只剩退出码。
+- **大结果用窄口**：`sec --brief`（去掉 5 年 series）、`us <代码> --history --brief`
+  （去掉逐日 bars）、`screen --limit N`（默认 20，`--all` 全量）。
+  这几个开关只影响载荷体积，不改变口径；终端表格仍按原样渲染。
+- 为什么要窄口：agent 工具对单次输出有字符上限，`sec`（28.5k）与
+  `us --history`（59.9k）默认会被截断——截断的 JSON 无法解析
 
 ## 子命令
 
@@ -55,20 +58,21 @@ invest-cli fund <代码/名称> [--json]
 
 - 数据源：同花顺金融数据服务优先；失败回退东方财富（intent deep fund 仍先盈米）
 - 获取：净值/业绩/回撤/费率/经理/十大重仓
-- 分析框架：对标 invest-fund 三关审查
-- 内置名称映射：易方达蓝筹（精选）→005827、中欧医疗→003096 等。注意 110011 现为「易方达优质精选(QDII)」，旧文档把「易方达蓝筹」映射到 110011 是错的（源码注释里专门记过这次纠偏）
+- 分析框架：对标 invest-fund 三问准入
+- 内置名称映射：易方达蓝筹（精选）→005827、中欧医疗→003096 等；110011 现为「易方达优质精选(QDII)」，勿按旧文档把易方达蓝筹映射到 110011（纠偏记录见源码注释）
 
 ### us — 美股分析
 
 ```bash
 invest-cli us <代码> [--json]
-invest-cli us <代码> --history [--years N]   # Tiingo EOD 历史专项（复权K线+分红/拆股/回撤摘要）
+invest-cli us <代码> --history [--years N] [--brief]   # Tiingo EOD 历史专项（复权K线+分红/拆股/回撤摘要）
 ```
 
 - 数据源：yfinance（估值/财务/评级，装了才在）；缺失或失败时回退**腾讯行情**（实时美股行情，含 PE/PB/市值/52周/股息率/ROE，实测 ~189ms 全字段），再退 **Tiingo**（官方交易所收盘价 + 市值/PE/PB/52周/股息率/最大回撤，`quote_basis=eod` 诚实标注收盘口径），最后 Bitget rToken 报价（USDT，非官方价，只有成交价与 24h 区间）
 - 获取：全量快照（yfinance）或行情口径快照（tencent）或 EOD 口径快照（tiingo）或行情-only（bitget，`quote_type=rtoken`）
 - 妙想（mxds）已于 2026-10-11 移出美股快照链：它是「自然语言→表格」服务（单次 1.2s+，快照查询只回收盘价简表，对比 tencent 全字段 189ms），不适合确定性快照；美股的自然语言查询走 `intent mxds "AAPL 股价"`（裸 ticker 已适配包装，结果缓存 300s）
 - `--history` 走 Tiingo 独占能力：可靠复权历史（adjClose + divCash + splitFactor），快照链其余源都不提供；免费档无三表，财报问题走 `invest-cli sec`
+- `--history --brief` 只留摘要（区间/回撤/分红/拆股），去掉逐日 bars：默认载荷约 60KB，会在 agent 工具侧被截断
 - 分析框架：对标 invest-stock 美股四维度（ROE持续性/负债安全/FCF质量/经济护城河）；Bitget 回退仅有报价，无财务
 
 ### quote — 免鉴权多标的实时行情（跨市场）
@@ -86,7 +90,7 @@ invest-cli quote <代码[,...]> [--json]
 ### sec — SEC EDGAR 美股数据（免费官方源，五个动作）
 
 ```bash
-invest-cli sec <代码> [--forms 10-K,10-Q,8-K] [--filings 5] [--years 5] [--quarterly] [--json]
+invest-cli sec <代码> [--forms 10-K,10-Q,8-K] [--filings 5] [--years 5] [--quarterly] [--brief] [--json]
 invest-cli sec <代码> --search "关键词" [--forms 10-K] [--from 2025-01] [--to 2025-12] [--limit 10]
 invest-cli sec <代码> --insiders [--days 180] [--limit 20]
 invest-cli sec <代码> --events [--days 365] [--limit 20]
@@ -95,6 +99,7 @@ invest-cli sec <投资人> --holdings [--limit 40]     # 机构名 / CIK / 上�
 
 - 数据源：SEC EDGAR 官方 API（companyfacts + submissions + full-text search + Archives），免费无 key
 - 身份声明：SEC 要求 UA 含邮箱（www.sec.gov 强制，否则 403）；默认用占位邮箱通过校验，建议设置 `SEC_EDGAR_USER_AGENT="你的名字 你的邮箱"` 声明真实联系方式
+- `--brief`（仅快照）：省略 5 年年度序列 `series`，保留最新指标与申报清单；默认快照 28.5KB，窄口后几 KB
 - 快照（默认动作）：24 项年报指标（营收/毛利/营业利润/净利/EPS/研发/销售管理费/所得税/经营现金流/资本开支/自由现金流/回购/分红/资产/负债/权益/现金/长期债务/存货/应收/流通股数；FCF 为派生并标注）+ 近 5 年年度序列（三关趋势表直接可用）+ 最近申报清单；`--quarterly` 附近 8 季（Q4 为推导值，标 derived）
 - 全文检索：EDGAR full-text search（2001 年起），命中到申报 + 原文段落（前 5 条拉原文抽取，抽不到留空、不编造）；多词自动按短语检索
 - 内部人交易：Form 4 逐笔（谁/职位/交易代码/股数/价格/金额/交易后持股），含期权行权与代扣税行
@@ -116,7 +121,7 @@ invest-cli fund-class <6位代码> [--json]
 - 未定语义：字段缺失/未登记 → None + unresolved 原因，**绝不静默猜**；L1 按「主要投什么资产」判（资产优先：QDII-商品 → 另类(商品) 而非跨境）
 - 与基金链分工：`invest-cli fund` 给净值/费率/重仓快照；本命令给分类事实
 
-### fmp — Financial Modeling Prep 美股深取（免费档，不进快照链）
+### fmp — Financial Modeling Prep 美股深取（免费档，us 链末位兜底）
 
 ```bash
 invest-cli fmp <代码> [--json]                       # 深取快照：行情 + TTM 比率 + 结构化评级 + 公司概况
@@ -125,7 +130,7 @@ invest-cli fmp <代码> --statements [--period annual] [--limit 2]
 invest-cli fmp <代码> --dividends [--json]
 ```
 
-- 数据源：FMP `/stable` API；免费档 250 次/天 + 30 天 500MB 带宽，**深取专项，不进快照链**（兜底位已由 Tiingo 承担，别拿本源做日常快照）
+- 数据源：FMP `/stable` API；免费档 250 次/天 + 30 天 500MB 带宽，**深取专项，us 链末位兜底**（前四源全败才用，别拿本源做日常快照）
 - 与 `sec` 分工：sec = 10-K XBRL **原文级**（官方免费、申报清单/内部人/事件/13F）；fmp = **加工好**的 TTM 比率（毛利率/利润率/负债/股息）、结构化评级（字母 + DCF/ROE/ROA/负债/PE/PB 六维分项分）、年度分析师预测
 - 免费档边界（2026-09-30 实测）：三表 annual 通、quarterly 付费；`ratios-ttm` 的 **ROE/ROA=null**（要 ROE 走三表自算或 yfinance）；estimates 仅 annual；ETF 持仓明确付费墙；**查无此票与付费墙同码 402**（按文案分流）
 - 分析框架：评级分项与 TTM 比率喂给 invest-stock 的「好不好/贵不贵」，数字与 sec_edgar/yfinance 交叉验证
@@ -150,11 +155,12 @@ invest-cli cn report <代码[,代码...]> [--limit N] [--offset N]   # 研报列
 ### screen — 选股（**股票**筛选）
 
 ```bash
-invest-cli screen <条件> [--json]
+invest-cli screen <条件> [--limit N|--all] [--json]
 ```
 
 - 数据源：妙想 mx_stocks_screener（自然语言选股，priority 55）优先，东方财富**选股** API（stock-screen）兜底——按定义只筛股票；两者结果体形状不同，解析层已兼容
 - 支持自然语言条件："市盈率低于10的银行股"、"ROE大于20%的消费股"
+- `--limit`（默认 20）/`--all`：行数裁剪，JSON 顶层带 `screen_meta{total,returned,truncated}`，不静默丢
 - 筛**基金**不要用本命令（基金条件会被服务端当成股票的主营业务关键词，结果不是基金）：
   走 `invest-cli intent screen <条件>`，带「基金/ETF/债基」等词时自动路由到盈米基金搜索
 
@@ -234,6 +240,47 @@ invest-cli ttskill <skill_id> --input '<json>' [--json]
 - fund 深取层内嵌 SEARCH/BASE_INFOS/HOLDING_INFO（走 `fund <code>`，勿手动透传）；黄金走 `intent deep commodity`
 - 账户/交易类包（ACCOUNT_*/TRADE_QUERY/CONDITION_ORDER/SIM_TRADE/RATION_PLAN/SUBACCOUNT）为边界外：invest-cli 数据链路不消费，不建高层入口
 - 全套 37 包用途与收敛标注：`invest-cli capabilities ttskill`
+- 口径真源 = `invest-fund/references/data-pipeline.md` + `sources/ttskill.py`；差距与收敛进度见 `docs/capability-gap.md`。老 ttfund CLI 已于 2026-09-03 退役，能力由官方业务包取代；分析 skill 不要绕过 invest-cli 直接调官方包。
+### htbr — 华泰柏瑞ETF事实查询（透传，72 接口，聚源底座）
+
+```bash
+invest-cli htbr <api_id> --input '<json>' [--json]
+invest-cli htbr --list                 # 语义别名 → api_id
+```
+
+- **透传 htbr-etf-skill**（`scripts/api_client.py invoke`），不重写其鉴权、取数与校验逻辑
+- 覆盖：基金档案/费率/规模、基金经理（含季报观点原文）、净值业绩、收益风险、
+  持仓与申万一级穿透、ETF 申赎资金流、指数成分与盈利预测等 72 个接口
+- **不进快照链**（route_kinds 为空）：由本命令直取
+- 凭据：`~/.htbr/credentials.json`（htbr 包内 `config.py` 唯一读取，**不读** `HTBR_API_KEY`）；需内网/VPN
+- 接口可用性：51 个放行、21 个 404 未开放（明细见 `invest-cli htbr --list`）；未开放如实报 404，不拼凑替代
+- 参数口径以 htbr 包内 `references/apis/<api_id>.md` 为唯一真源（三套代码口径极易串用，调用前必查）
+- 别名见 `invest-cli htbr --list`；常用：`basic`、`viewpoint`、`industry-dist`、`earning-forecast`
+
+
+### sfg — 见基行事(seefundgo) 公募基金 MCP（透传，45 工具）
+
+```bash
+invest-cli sfg <工具|别名> --input '<json>' [--json]
+invest-cli sfg --list                     # 语义别名 → 工具名
+invest-cli sfg portfolio-submit --input '{"codes":["005827.OF"]}'
+invest-cli sfg --poll <job_id>            # 轮询组合诊断结果
+```
+
+- **透传见基行事 MCP**（Streamable HTTP 会话式），不重写上游口径；`--list` 看别名
+- 覆盖：全市场 14000+ 公募基金/ETF/指数、6900+ 经理——档案/净值/业绩/风险/
+  持仓穿透/经理画像/选基/排行榜/ETF 资金流/组合体检
+- **不进快照链**（route_kinds 为空）：由本命令直取；自然语言入口 `intent sfg`
+- **积分制**（余额 0 时全工具被拒）：只做妙想没有的**垂直深取**（经理画像/归因/
+  风格漂移/选基排行榜/组合体检）；通用基金查询走 `intent deep fund`
+- 凭据：`SFG_MCP_TOKEN` 或 `~/.config/invest-cli/sfg.env`
+- **代码口径**：上游要标准码（`005827.OF` / `510300.SH`），裸 6 位码直接 404；
+  同一代码可能场内外并存，**不猜后缀**，先经 `sfg_search_funds` 解析再取数
+- **组合诊断走异步**：同步接口有 30s 硬顶，用 `portfolio-submit` + `--poll`
+  （实测 succeeded 需 300-340s，轮询上限 420s）
+- 出处标注：产出必须保留「数据来源：见基行事MCP（fundfof.com）」
+- 常用别名：`profile`、`holdings`、`manager`、`screen`、`rankings`、`etf`、`index`、`market`
+
 
 ### capabilities — 能力发现层
 
@@ -245,118 +292,57 @@ invest-cli capabilities [yingmi|ttskill] [--json]
 - 空参=数据源总览 + 高层入口速查；`--json` 给 skill 层做路由决策
 - 只列清单不取业务数据；拿不准参数先看 `capabilities` 输出里的工具描述
 
-### 天天基金官方（ttskill，fund 源，已封装）
-
-老 ttfund CLI 已退役（2026-09-03）：能力被官方 ttskill 业务包取代。
-- fund 默认链为**自带源优先** `hithink > [ttskill 可选深取] > eastmoney`；ttskill 仅在已登录就绪时补充同类分位/机构占比/经理在管等深取字段
-- 黄金深取走 `intent deep commodity` → 官方 `TTFUND_GOLD_INFO`
-- 分析 skill 不要绕过 invest-cli 直接调官方包：fund 深取走 `fund <code>`，其余包走 `invest-cli ttskill <skill_id>` 透传
-- 口径真源 = `invest-fund/references/data-pipeline.md` + `sources/ttskill.py`；差距与收敛进度见 `docs/capability-gap.md`
-
 ### intent — 意图层（默认取数入口，收敛接口面）
 
 ```bash
-invest-cli intent <deep/screen/portfolio/plan/macro/present/mxds> <参数> [--json]
+invest-cli intent <deep/screen/portfolio/plan/macro/present/mxds/sfg> <参数> [--json]
 ```
 
-- 把盈米 69 个 MCP 工具 + Wind 7 类收敛为 6 个语义入口，内部按场景 + 标的类型路由到权威源
-- `intent mxds "<自然语言>"` — 妙想自然语言查询（A股/港股/美股/基金/债券/指数/宏观/新闻/公告自动路由；裸 ticker 自动包装查询模板；结果按查询文本缓存 300s，命中带 `cached: true`）
+- 把盈米 69 工具 + Wind 7 类 + 见基行事收敛为语义入口，内部按场景 + 标的类型路由到权威源
+- `intent mxds "<自然语言>"` — 妙想自然语言查询（A股/港股/美股/基金/债券/指数/宏观/新闻/公告自动路由，结果按查询文本缓存 300s）
+- `intent sfg "<查询>"` — 见基行事：单只基金→档案，多只代码/名称→组合诊断（异步轮询）
 - 接口面小、能力面全；`--json` 输出统一信封（source/ok/data/error）
-- 推荐作为分析 skill 的首选取数方式；wind/yingmi 透传仅作高级/调试
+- 推荐作为分析 skill 的首选取数方式；wind/yingmi/sfg 透传仅作高级/调试
 
 ### research — 长程研究管线（编排既取数入口，不自建数据路径）
 
 ```bash
+# 主题主动基金：池构建 → 批量快照 → 排名 → 重仓×股息率交叉
 invest-cli research fund-rank <主题> [--top N] [--order r3y|r1y|ytd] [--limit N] [--dy auto|on|off] [--enrich] [--out DIR] [--json]
+
+# 指数基金横评：同一指数下的 ETF / 联接基金 → 规模/费率/跟踪误差/得分
+invest-cli research etf-rank <指数代码或名称> [--top N] [--period 1m|3m|6m|1y|3y|5y] [--components N] [--limit N] [--out DIR] [--json]
 ```
 
-- 一条命令完成「池构建(TTFUND_SEARCH 分页) → 批量快照(复用 `fund` 同路径同缓存) → 多期业绩排名 → 重仓×股息率交叉(公司名合并, A/H 同司一司) → 双源互证」
-- 快照走 `fetch_fund_with_fallback`（与 `invest-cli fund` 完全同源，命中同一份磁盘缓存）；批量并发默认 3，`INVEST_CLI_RESEARCH_CONCURRENCY` 可调（同花顺合同配额未知，调高前先小池试）
-- 池规则：主动型（剔指数/货币/理财/债券/QDII）、份额类去重（留 A 类）、「改革红利/混改红利」等复合名剔除、离岸互认基金剔除；红利/股息主题自动并入「股息」别名检索并开启股息率交叉（妙想 ≥4% 参照集），港股通主题默认剔除（重仓在港股，A 股参照集不适用）
-- **双源互证**：hithink returns vs ttskill 深取字段逐期对照（容差 0.05pp），不一致显式标注 ✗——「红利」基金名的业绩冠军可能根本不持高股息股，重仓验证比名字重要
-- `--out DIR` 落 Markdown 报告与 result.json（provenance 齐全）；`--enrich` 给 Top-N 附 argo 资讯（每只一次检索，默认关）
-- 定位：把 2026-10-11 红利交叉分析的十轮手工调用收敛为一条命令；首轮实测 97 只池排名与手工分析完全一致
+- fund-rank 一条命令完成「池构建(TTFUND_SEARCH 分页) → 批量快照(复用 `fund` 同路径同缓存) → 多期业绩排名 → 重仓×股息率交叉(公司名合并, A/H 同司一司) → 双源互证」
+- 快照并发默认 3（`INVEST_CLI_RESEARCH_CONCURRENCY` 可调；同花顺合同配额未知，调高前先小池试）
+- 池规则：主动型（剔指数/货币/理财/债券/QDII）、份额类去重（留 A 类）、「改革红利/混改红利」剔除、离岸互认剔除；红利/股息主题并入「股息」别名并开启股息率交叉（妙想 ≥4%），港股通默认剔除
+- **双源互证**：hithink returns vs ttskill 深取逐期对照（容差 0.05pp），不一致显式标注 ✗——业绩冠军可能不持高股息股
+- `--out` 落 Markdown 报告 + result.json；`--enrich` 给 Top-N 附 argo 资讯（默认关）
+- 定位：2026-10-11 十轮手工调用收敛为一条命令，97 只池排名与手工一致
+- **etf-rank** 走 `TTFUND_INDEX_FUND_SELECTION`：一次取回候选指数、基金横评、前 N 大成分与指数估值。`--components` 是成分股条数（非基金条数）；按接口 `score` 排序，`score_note`/`risk_note` 原样透出；规模<2 亿单独汇总。实测沪深300 357 只（2026-11-08）
 
-## Skill 触发后的执行流程
+### 其余子命令速览
 
-1. **识别标的类型**：根据用户输入关键词判断 stock/fund/us/screen
-2. **调用 CLI**：执行对应子命令，`--json` 模式获取数据
-3. **解读数据**：
-   - stock → 按 invest-stock 三关框架输出分析报告
-   - fund → 按 invest-fund 三关框架输出分析报告
-   - us → 按 invest-stock 美股四维度框架输出分析报告
-   - screen → 直接输出选股结果表格
-4. **补充分析**：CLI 数据 + invest 框架 = 完整分析报告
+| 命令 | 一句话 |
+|---|---|
+| `invest-cli kline <代码>` | K线（分钟级自动转 westock CLI，日线原生快路径） |
+| `invest-cli westock <子命令>` | 腾讯微证券透传（筹码/龙虎榜/资金流/ESG/产业链 40+ 子命令），收敛入口见 `invest-cli cn` |
+| `invest-cli report <基金代码> --latest 4` | 基金定期报告 PDF 下载（季报/半年报/年报，东财源）；默认落 state 目录 `reports/<代码>/`，不进仓库 |
+| `invest-cli info <查询词>` | 财经检索/资讯/舆情（走 argo，省配额） |
+| `invest-cli doctor` | 运行面健康自检：数据源/运行时账本/缓存/解释器/注册软链/DSH 插件副本漂移，一条命令六个面。账本在 `~/.config/invest-cli/usage_log/calls.jsonl`：源级记每次真实取数（成败/耗时/降级链/逐源原因），命令级记每次 CLI 调用（rc/耗时，doctor 等诊断命令自身不记）；1MiB 回缩，`INVEST_CLI_USAGE_LOG=0` 可整体关闭。`invest-cli datasources` 尾部同源展示最近 24h 汇总 |
 
-## 示例
-
-### Skill 触发示例
-
-用户：「/cli 分析一下茅台」
-→ 识别为 stock → 调用 `invest_cli.py stock 600519 --json`
-→ 解析 JSON → 按 invest-stock 三关框架输出分析报告
-
-用户：「/cli 帮我看看 110011 这只基金」
-→ 识别为 fund → 调用 `invest_cli.py fund 110011 --json`
-→ 解析 JSON → 按 invest-fund 三关框架输出分析报告
-
-用户：「/cli 看看 AAPL」
-→ 识别为 us → 调用 `invest_cli.py us AAPL --json`
-→ 解析 JSON → 按 invest-stock 美股四维度框架输出分析报告
-
-### 终端直接运行示例
-
-```bash
-$ invest-cli stock 600519
-============================================================
-  贵州茅台（600519）— 行情快照
-============================================================
-
-  指标              数值
-  ------------------------------
-  最新价           1680.00
-  涨跌幅             1.23%
-  市盈率PE          28.50
-  ...
-
-$ invest-cli us AAPL
-============================================================
-  Apple Inc.（AAPL）— 美股快照
-============================================================
-  ...
-```
-
-## 与现有 invest 系列的关系
-
-| 能力 | invest 系列 | invest-cli |
-|------|------------|------------|
-| 分析框架 | ✅ 完整 | 复用 invest 系列 |
-| 数据获取 | ❌ 靠 web search | ✅ CLI 脚本 |
-| 终端直接运行 | ❌ | ✅ |
-| 触发方式 | 自然语言 | /cli + 自然语言 |
-
-**invest-cli 不替代 invest 系列，是补充**。当用户想用 CLI 或明确说"/cli"时走 invest-cli，否则走原有 invest 系列。
+完整参数以 `invest-cli --help` 与各子命令 `--help` 为准。命令清单不在本文档手写：`test_command_surface.py` 从 `invest_cli.py` 的 `add_parser` 与 `dispatch` 用 AST 取真值并断言两者双射，新增命令时不必回来改数字。
 
 ## 数据源接入（统一门闩）
 
-数据源声明真源为 `data-sources.yaml`，可用性由 `invest-cli datasources` 运行时探测。各源启用条件：
+数据源声明真源为 `data-sources.yaml`（源清单与数量以该文件为准，不在文档里写死），可用性与覆盖范围由 `invest-cli datasources` 运行时探测——表格不在此复述（曾经列过 11 源的表，永远追不上 yaml，2026-10-25 删除）。启用条件（各源所需 env / 凭据路径）见下节「环境要求」；能力矩阵与字段口径见 `docs/data-sources.md`。取数与降级：单一场景优先最高优先级源，整单失败才降级，禁止跨源合并字段。
 
-| 数据源 | 启用条件 | 覆盖 |
-| --- | --- | --- |
-| 同花顺金融数据服务 | `HITHINK_FINANCE_API_KEY` 或用户级 `credentials.env` | stock/fund（A 股与公募，不含港股/美股/自然语言选股） |
-| 东方财富 | `EASTMONEY_APIKEY` | stock/fund/screen |
-| yfinance | `uv pip install yfinance` | us（行情+财务） |
-| SEC EDGAR | 免费无 key（可选 `SEC_EDGAR_USER_AGENT` 声明身份） | us 原文级数据（`invest-cli sec` 直取，不经快照链）：快照/5 年序列、全文检索、Form 4 内部人、8-K+13D/G 事件、13F 持仓 |
-| Tiingo（美股 EOD） | `TIINGO_API_KEY` 或 `~/.config/invest-cli/tiingo.env` | us（官方收盘价 + 复权历史 + 估值序列）；EOD 历史专项 `invest-cli us <代码> --history`。免费档无三表（财报走 sec_edgar）、新闻在付费墙内 |
-| Financial Modeling Prep（fmp） | `FMP_API_KEY` 或 `~/.config/invest-cli/fmp.env` | 美股深取（三表 annual/TTM 比率/结构化评级/年度预测，`invest-cli fmp` 直取）。免费档 250 次/天：ROE/ROA 比率=null、季度预测与 ETF 持仓付费 |
-| Bitget rToken | 始终可用（公开 API） | us（仅行情/USDT） |
-| 万得 Wind（直连 MCP） | `WIND_API_KEY`（`~/.wind-aifinmarket/config` 或环境变量） | stock/fund/index/bond/news/macro |
-| 盈米且慢（直连 OpenAPI） | `~/.yingmi-skill-cli/config.json` 的 apiKey | fund/strategy/wealth/news |
-| 天天基金（直连 gateway） | 官方凭据未过期（Keychain `com.ttfund.ttskill.base`）+ 已装业务包 | fund（同类分位/机构占比/在管列表等深取补充） |
-| argo | `argo` skill 目录内含 `scripts/search.py` | news/macro（资讯/舆情/宏观检索；不经快照链，`info`/`intent macro` 直调）。引擎名原样透传给 argo（250+ 个，传错即报错、不静默换源）；清单见 argo `search.py --list-engines` |
-| 探测负缓存 | 默认自动 | **http 型**（如 yfinance 的端点可达性）探测失败的源 120s 内不重探（`INVEST_CLI_PROBE_TTL_FAIL` 可覆盖），期间直接跳过不付探测等待；**adapter 型**（同花顺/Wind/盈米/天天等凭据型）失败**不落盘**——补凭据是秒级恢复，落 120s 负缓存会让 `datasources` 给出 2 分钟前的旧结论，故仅进程内 30s；快照命中缓存则完全无感 |
+三条行为约定（表格时代就在、仍然成立）：
 
-能力矩阵与详细配置见 `docs/data-sources.md`。取数与降级：单一场景优先最高优先级源，整单失败才降级，禁止跨源合并字段。
+- **探测负缓存**：http 型（如 yfinance 的端点可达性）探测失败的源 120s 内不重探（`INVEST_CLI_PROBE_TTL_FAIL` 可覆盖）；adapter 型（同花顺/Wind/盈米/天天等凭据型）失败**也落盘**，但用短 TTL（默认 60s，`INVEST_CLI_PROBE_TTL_FAIL` 可覆盖；排障设 0 立即失效）——补凭据是秒级恢复，窗口必须短到下一分钟就能看到新结论。
+- **argo 透传**：引擎名原样传给 argo（250+ 个，传错即报错、不静默换源）；清单见 argo `search.py --list-engines`。
+- **免 Key 源开箱即用**：腾讯行情 / SEC EDGAR / FRED / yfinance / Bitget 无需任何配置。
 
 ## 环境要求
 
@@ -365,4 +351,11 @@ $ invest-cli us AAPL
 - `yfinance`：Python 包（us 全量快照推荐；缺省可回退 Bitget）
 - `TIINGO_API_KEY` 或 `~/.config/invest-cli/tiingo.env`：Tiingo 美股 EOD（us 链兜底位 + `us --history` 专项；免费注册 https://www.tiingo.com）
 - `FMP_API_KEY` 或 `~/.config/invest-cli/fmp.env`：FMP 美股深取（`invest-cli fmp`；免费注册 https://site.financialmodelingprep.com）
-- Python 3.10+
+- `~/.htbr/credentials.json`：华泰柏瑞 ETF 事实查询（`invest-cli htbr`；Key 在 etf-skill 官网自助获取后 `config.py save-key` 保存，**不读** `HTBR_API_KEY` 环境变量；需内网/VPN 可达 htbr 服务端点）
+- `SFG_MCP_TOKEN` 或 `~/.config/invest-cli/sfg.env`：见基行事基金 MCP（`invest-cli sfg`）
+- Python 3.9+（兼容下限，公开仓承诺）。本机运行时统一 skill 自带 venv（版本由
+  `invest-cli doctor` 自报）：
+  mx-data 被任意解释器启动时会自动 exec 进 venv（`MX_DATA_NO_REEXEC=1` 可关），
+  系统 3.9 已 EOL（2025-10）不再进热路径。改动仍不得引入 3.10+ 语法
+  （如 `zip(strict=True)`、`match`）——venv 缺失时任意 3.9+ 解释器都是合法兜底，
+  两套门禁（`test_py39_compat` / `test_static_imports`）钉住这一点。

@@ -24,7 +24,21 @@ if str(MX_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(MX_SCRIPTS))
 
 import get_data  # noqa: E402
-from query_router import detect_scenario, looks_like_us_ticker  # noqa: E402
+from query_router import (  # noqa: E402
+    SCENARIO_COMMANDS,
+    detect_scenario,
+    looks_like_us_ticker,
+    scenario_argv,
+    scenario_route_kind,
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_reexec(monkeypatch):
+    """本文件多数用例直接调 get_data()，而非 venv 解释器（系统 3.9）下会触发
+    真 os.execv 把 pytest 进程整个换掉——实测表现为输出停在半路、无 summary。
+    默认设防环标志；需要验证 re-exec 语义的 _ensure_runtime 单测自己 delenv。"""
+    monkeypatch.setenv("MX_DATA_NO_REEXEC", "1")
 
 
 @pytest.mark.parametrize("value,expected", [
@@ -90,6 +104,46 @@ def test_scenario_cmd_is_argv_list_not_string() -> None:
     assert get_data._scenario_cmd("stock_a", "600519", "") == ["stock", "600519", "--json"]
     assert get_data._scenario_cmd("stock_us", "AAPL", "") == ["us", "AAPL", "--json"]
     assert get_data._scenario_cmd("bond", "240001", "") == ["intent", "deep", "bond", "240001"]
+
+
+def test_scenario_table_is_single_source() -> None:
+    """场景状态机单源：argv 与 route_kind 都从 SCENARIO_COMMANDS 派生。
+
+    历史缺陷：同一场景的状态散在三处（SCENARIO_COMMANDS 文档表、
+    _scenario_cmd 的 argv 分支、_FETCHERS 取数映射），加场景要改三处，
+    漏一处就是「文档说走 A、实际走 B」。本用例钉住三份已合一。
+    """
+    for key, conf in SCENARIO_COMMANDS.items():
+        # macro 是无参场景，其余场景都必须有参数占位
+        if key != "macro":
+            assert "<code>" in conf["argv"] or "<query>" in conf["argv"], (
+                f"{key} 的 argv 缺参数占位：{conf['argv']}")
+        # argv 的静态部分（去掉占位）必须是真实子命令
+        static = [t for t in conf["argv"] if not t.startswith("<")]
+        assert static[0] in ("stock", "us", "fund", "intent", "info"), (
+            f"{key} 的子命令不在白名单：{static}")
+        assert conf["route_kind"] is None or isinstance(conf["route_kind"], tuple)
+
+
+def test_scenario_argv_and_get_data_agree(monkeypatch) -> None:
+    """get_data._scenario_cmd 必须与 scenario_argv 逐字一致（防两份实现漂移）。"""
+    for key in SCENARIO_COMMANDS:
+        assert get_data._scenario_cmd(key, "600519", "茅台 最新") == \
+            scenario_argv(key, "600519", "茅台 最新")
+
+
+def test_scenario_route_kind_matches_detect() -> None:
+    """detect_scenario 产出的每个 key 都必须能在场景表里查到路由。"""
+    for query, type_, code in [
+        ("", "us", "AAPL"), ("", "stock", "AAPL"), ("", "stock", "600519"),
+        ("", "fund", "005827"), ("", "bond", ""), ("", "news", ""),
+        ("", "macro", ""), ("", "enterprise", "600519"), ("", "industry", ""),
+        ("茅台 ROE", "", ""), ("港股 腾讯", "", ""), ("", "", ""),
+    ]:
+        key = detect_scenario(query, type_, code=code)
+        assert key in SCENARIO_COMMANDS, f"detect_scenario 产出了表外 key：{key}"
+        assert scenario_route_kind(key) is not None or key in (
+            "bond", "news", "macro"), f"{key} 的 route_kind 与场景语义不符"
 
 
 def test_fetch_subprocess_passes_argv_without_resplitting(monkeypatch) -> None:
@@ -189,59 +243,86 @@ def test_scripts_path_resolves_to_real_route_module() -> None:
     assert (get_data.INVEST_CLI_SCRIPTS.parent / ".venv" / "bin" / "python").is_file()
 
 
-def test_ensure_runtime_is_noop_for_non_us(monkeypatch) -> None:
+def _venv_root() -> "Path":
+    return get_data.INVEST_CLI_SCRIPTS.parent / ".venv"
+
+
+def test_ensure_runtime_noop_when_already_in_venv(monkeypatch) -> None:
     called = []
+    monkeypatch.setattr(get_data.sys, "prefix", str(_venv_root()))
     monkeypatch.setattr(get_data.os, "execv", lambda *a: called.append(a))
-    get_data._ensure_runtime("stock_a")
+    get_data._ensure_runtime()
     assert called == []
+
+
+def test_ensure_runtime_noop_when_no_venv(monkeypatch, tmp_path) -> None:
+    """公开仓用户环境：没有 .venv，系统解释器（任意 3.9+）就是支持形态。"""
+    called = []
+    monkeypatch.setattr(get_data, "INVEST_CLI_SCRIPTS", tmp_path / "scripts")
+    monkeypatch.setattr(get_data.os, "execv", lambda *a: called.append(a))
+    get_data._ensure_runtime()
+    assert called == []
+
+
+def test_ensure_runtime_noop_when_venv_interpreter_broken(monkeypatch, tmp_path) -> None:
+    """venv 目录在、解释器软链断：判据须与 wrapper 同为 False，不得 re-exec。
+
+    第八轮回归：Homebrew 升级删掉 base interpreter 后旧判据只认 is_file()，
+    三处各自静默回退。这里钉住 mx-data 侧不会 exec 到一个跑不起来的二进制。
+    """
+    called = []
+    root = tmp_path / "invest-cli"
+    bindir = root / ".venv" / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / "python").symlink_to(bindir / "python3.99-missing")
+    monkeypatch.setattr(get_data, "INVEST_CLI_SCRIPTS", root / "scripts")
+    monkeypatch.setattr(get_data.sys, "prefix", "/usr")
+    monkeypatch.setattr(get_data.os, "execv", lambda *a: called.append(a))
+    monkeypatch.delenv("MX_DATA_NO_REEXEC", raising=False)
+    get_data._ensure_runtime()
+    assert called == []
+
+
+def test_ensure_runtime_reexec_when_outside_venv(monkeypatch) -> None:
+    """系统解释器启动 → 升级 re-exec 进 venv（2026-10-25 起不限美股场景：
+    3.9 EOL + LibreSSL 告警，本机运行时统一走 skill 自带 venv）。"""
+    import os
+
+    called = []
+    monkeypatch.delenv("MX_DATA_NO_REEXEC", raising=False)
+    monkeypatch.setattr(get_data.sys, "prefix", "/usr")
+    monkeypatch.setattr(get_data.os, "execv", lambda *a: called.append(a))
+    get_data._ensure_runtime()
+    assert len(called) == 1
+    path, args = called[0]
+    assert path == str(_venv_root() / "bin" / "python")
+    assert args[0] == path  # execv(prog, [prog, *sys.argv]) 约定
+    assert os.environ.get("MX_DATA_NO_REEXEC") == "1", "exec 前必须设防环标志"
 
 
 def test_ensure_runtime_respects_opt_out(monkeypatch) -> None:
     called = []
+    monkeypatch.setattr(get_data.sys, "prefix", "/usr")
     monkeypatch.setenv("MX_DATA_NO_REEXEC", "1")
     monkeypatch.setattr(get_data.os, "execv", lambda *a: called.append(a))
-    get_data._ensure_runtime("stock_us")
+    get_data._ensure_runtime()
     assert called == []
 
 
 def test_ensure_runtime_probe_does_not_import_yfinance() -> None:
-    """探测只问「装没装」，不得真 import。
-
-    真 import 会连带 pandas/numpy：实测 336ms CPU + 54MB RSS，而随后多半
-    直接命中快照缓存、根本用不上 yfinance（缓存命中路径 362ms → 30ms，
-    RSS 81MB → 14MB 就是这一行）。用新进程验，避免本进程已有的 import 污染结论。
-    """
-    import json
-    import subprocess
-
-    code = (
-        "import json, sys;"
-        f"sys.path.insert(0, {str(MX_SCRIPTS)!r});"
-        "import get_data;"
-        "get_data._ensure_runtime('stock_us');"
-        "print(json.dumps({'yfinance_imported': 'yfinance' in sys.modules}))"
-    )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                         text=True, timeout=60)
-    assert out.returncode == 0, out.stderr
-    assert json.loads(out.stdout)["yfinance_imported"] is False, (
-        "_ensure_runtime 把 yfinance 真 import 进来了：探测相位变成了重库加载"
-    )
-
-
-def test_ensure_runtime_probe_does_not_import_yfinance() -> None:
-    """探测只问「装没装」，不能把 yfinance 真 import 进来。
+    """升级探测只看 sys.prefix 与文件存在性，不得真 import 任何重库。
 
     旧实现 `import yfinance` 当探测：连带 pandas/numpy，实测每次 336ms CPU、
-    +54MB 内存，缓存命中的美股查询因此从 50ms 变成 362ms。用子进程断言，
-    是因为同进程里别的用例可能已经 import 过 yfinance，sys.modules 不干净。
+    +54MB 内存，缓存命中的查询因此从 50ms 变成 362ms。用子进程断言，
+    是因为同进程里别的用例可能已经 import 过，sys.modules 不干净；
+    子进程带 MX_DATA_NO_REEXEC=1，避免 3.9 下真的 exec 换进程。
     """
     import os
     import subprocess
 
     code = (
         "import sys; sys.path.insert(0, sys.argv[1]); import get_data;"
-        "get_data._ensure_runtime('stock_us'); print('yfinance' in sys.modules)"
+        "get_data._ensure_runtime(); print('yfinance' in sys.modules)"
     )
     env = {**os.environ, "MX_DATA_NO_REEXEC": "1"}
     out = subprocess.run(

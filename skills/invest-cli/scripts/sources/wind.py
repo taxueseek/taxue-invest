@@ -37,6 +37,32 @@ _ENDPOINTS = {
 }
 
 
+def _paired(cols: list, row: list, what: str) -> list[tuple[Any, Any]]:
+    """列名与值按位配对；长度不匹配时报错，而不是静默截断。
+
+    Wind 的表格回包是「列名列表 + 行值列表」，两者长度必须一致。裸 zip
+    在长度不匹配时静默截断到较短的一侧：列名少一个，后面的值就整体
+    左移一位，「基金成立日」拿到「基金经理」的值，且 rc=0、无任何信号，
+    错得无声，比报错难查得多。这类缺陷在单测里也复现不了，因为桩通常
+    两边都给齐。
+
+    只在这一层校验一次：三个调用点（基金档案 / 年度字段 / 区间收益率）
+    共用，改规则只改一处。
+
+    不用 `zip(strict=True)`：那是 3.10 才有的参数（PEP 618），而 mx-data 按
+    invest-stock 文档用系统 `python3`（本机 3.9.6）启动并进程内 import 这里，
+    3.9 下会直接 `TypeError: zip() takes no keyword arguments`——守卫本身成了
+    故障点。显式比较长度等价，且 3.9 起全版本可用。
+    """
+    if len(cols) != len(row):
+        # 长度相等时这条路径永不触发，正常取数零成本。
+        raise ValueError(
+            f"{what}：列数 {len(cols)} 与值数 {len(row)} 不一致，"
+            f"拒绝配对以免字段错位"
+        )
+    return list(zip(cols, row))
+
+
 def _read_key_from_file(path: Path) -> str:
     try:
         text = path.read_text(encoding="utf-8")
@@ -306,7 +332,17 @@ def fund_nav_series(code: str, name: str, begin: str, end: str, workers: int = 4
             return None
 
         with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-            for seg, rows in zip(jobs, ex.map(one, jobs)):
+            # 显式校验「段与结果一一对应」这一不变量：executor.map 保序保长，
+            # 长度一旦对不上说明上游行为变了，此时该炸而不是让后续
+            # `seg[0]~seg[1]` 的失败归因张冠李戴。
+            # 不用 `zip(strict=True)`：3.10 起才有（PEP 618），3.9 会 TypeError。
+            results = list(ex.map(one, jobs))
+            if len(results) != len(jobs):
+                raise RuntimeError(
+                    f"复权净值分段取数：{len(jobs)} 段返回 {len(results)} 份结果，"
+                    f"拒绝按位配对以免失败归因错位"
+                )
+            for seg, rows in zip(jobs, results):
                 if rows is None:
                     failed.append(f"{seg[0]}~{seg[1]}")
                     continue
@@ -330,6 +366,11 @@ def index_series(windcode: str, begin: str, end: str) -> dict:
 
     仅返回有行情的交易日：含港股仓位的基金业绩基准指数（基金代码+BI.WI）在港股假期
     无行情（实测 011371BI.WI 缺 21 天），缺口由 tenure_calc.align_index 前值沿用处理。
+
+    P3 覆盖区间复用：tenure 入口在拉指数前，先取
+    [min(各基金基期) → max(各基金 end)] 的超集区间一次拉取，各基金再切片。
+    同 code 的精确区间缓存（idx|<code>|<begin>|<end>）仍由 _cached 兜底。
+    Wind 按调用次数计费，一次全量比 N 次分段更便宜；切片不改变任何点位口径。
     """
 
     def produce() -> dict:
@@ -370,7 +411,7 @@ def fund_profile(code: str, name: str = "") -> dict:
             return {"ok": False, "data": None, "error": f"{code} 未找到基金档案"}
         row = rows[0]
         data: dict[str, Any] = {}
-        for col, val in zip(cols, row):
+        for col, val in _paired(cols, row, "基金档案"):
             key = _PROFILE_KEYS.get(col)
             if key and val not in (None, ""):
                 data.setdefault(key, val)
@@ -396,7 +437,7 @@ def fund_annual_stats(code: str, name: str, years: list[int]) -> dict:
             return {"ok": False, "data": None, "error": "Wind 未返回年度字段"}
         row = rows[0]
         data: dict[int, dict] = {}
-        for col, val in zip(cols, row):
+        for col, val in _paired(cols, row, "年度业绩字段"):
             for y in years:
                 if col.startswith(f"{y}年年度收益率"):
                     data.setdefault(y, {})["ret"] = float(val) / 100.0 if val is not None else None
@@ -418,7 +459,7 @@ def range_return(code: str, name: str, begin: str, end: str) -> dict:
         cols, rows = _first_rows(res)
         if not rows:
             return {"ok": False, "value": None, "error": "Wind 未返回区间收益率"}
-        for col, val in zip(cols, rows[0]):
+        for col, val in _paired(cols, rows[0], "区间收益率"):
             if ("增长率" in col or "收益率" in col) and val is not None:
                 return {"ok": True, "value": float(val) / 100.0, "error": None}
         return {"ok": False, "value": None, "error": "区间收益率字段缺失"}

@@ -165,6 +165,11 @@ def fetch_index(idxcode: str, begin: str, end: str) -> dict:
             "source": "wind", "error": res.get("error")}
 
 
+# P3 超集预取的进程内交接区：manager 模式 run() 预取后写入，build_fund() 消费
+# 后 pop。单只模式不经过这里，原 fetch_index 路径不变。
+_INDEX_SUPERSET: dict = {}
+
+
 def fetch_profile(code: str, name: str, prefer: str = "auto") -> dict:
     """基金档案：Wind（含历任任职时间，精确口径）→ ttskill（无任职记录，降级）。
 
@@ -249,7 +254,15 @@ def build_fund(
     last = series[-1][0]
 
     idxcode = benchmark if benchmark not in ("auto", "") else f"{_fcode(code)}BI.WI"
-    idx = fetch_index(idxcode, begin, last)
+    # P3 超集预取的消费端：若调用方（manager 模式）已按同 idxcode 预取超集区间，
+    # _INDEX_SUPERSET 命中则直接切片，省一次上游调用；未命中走原 fetch_index。
+    idx = _INDEX_SUPERSET.pop(idxcode, None)
+    if idx is None:
+        idx = fetch_index(idxcode, begin, last)
+    else:
+        _s = idx.get("series") or []
+        idx = {"ok": True, "series": [r for r in _s if begin <= str(r[0])[:10] <= last],
+               "source": idx.get("source", "wind-superset"), "error": None}
     if not idx.get("ok"):
         warnings.append(f"基准指数 {idxcode} 取数失败（{_short_err(idx.get('error'))}），本次仅输出基金口径")
 
@@ -632,9 +645,44 @@ def run(
             return 1
         keep, dropped = initial_share_only(res["funds"])
         yl = default_years(date.today().isoformat(), years)
-        for f in keep:
-            funds.append(build_fund(f["code"], f["name"], manager=manager, since="",
-                                    benchmark=benchmark, prefer=prefer, years=yl))
+        # P0 多基金并行：build_fund 是纯函数（输入 code/name/manager/benchmark
+        # → 输出 dict，无共享状态），ThreadPoolExecutor 安全。Wind 按次计费
+        # 不按并发计费；顺序用 map 保持与 keep 一致，产物可比性不变。
+        # P3 超集预取：同 benchmark（或同 auto 解析结果）的多只基金，先拉一次
+        # [min(基期下界) → max(end)] 超集指数，各 build_fund 内切片复用。
+        # 超集键是 idxcode；auto 模式下各基金 BI.WI 不同，不预取（key 必然不一致）。
+        from concurrent.futures import ThreadPoolExecutor
+        _jobs = [(f["code"], f["name"]) for f in keep]
+        if len(_jobs) > 1 and benchmark not in ("auto", ""):
+            _begins, _ends = [], []
+            for _c, _n in _jobs:
+                _prof = fetch_profile(_c if _c.endswith(".OF") else f"{_fcode(_c)}.OF", _n, prefer)
+                _pd = _prof.get("data") or {}
+                _since = (resolve_appointment(_c, manager, _pd.get("manager_history") or "", "").get("appointment")
+                          or _pd.get("inception") or "")
+                if _since:
+                    from datetime import timedelta as _td
+                    _b = min(f"{yl[0] - 1}-12-31",
+                             (date.fromisoformat(_since) - _td(days=7)).isoformat())
+                    if _pd.get("inception"):
+                        _b = max(_b, _pd["inception"])
+                    _begins.append(_b)
+            _end = date.today().isoformat()
+            if _begins:
+                _super = fetch_index(benchmark, min(_begins), _end)
+                if _super.get("ok") and _super.get("series"):
+                    _INDEX_SUPERSET[benchmark] = _super
+        if len(_jobs) > 1:
+            with ThreadPoolExecutor(max_workers=min(4, len(_jobs))) as _pool:
+                funds.extend(list(_pool.map(
+                    lambda _cn: build_fund(_cn[0], _cn[1], manager=manager, since="",
+                                           benchmark=benchmark, prefer=prefer, years=yl),
+                    _jobs)))
+            _INDEX_SUPERSET.clear()
+        else:
+            for f in keep:
+                funds.append(build_fund(f["code"], f["name"], manager=manager, since="",
+                                        benchmark=benchmark, prefer=prefer, years=yl))
     else:
         code = keyword
         name = keyword

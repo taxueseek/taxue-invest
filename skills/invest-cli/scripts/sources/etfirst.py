@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 # etfirst CLI 路径
 _ETFIRST_BIN = "etfirst"
@@ -27,7 +25,6 @@ def _cache_key(cmd: str, code: str) -> str:
 
 def _get_from_cache(key: str) -> Optional[dict]:
     try:
-        sys.path.insert(0, str(Path(__file__).parent))
         from _common import cache_get
         return cache_get("etfirst", key, CACHE_TTL)
     except Exception:
@@ -36,7 +33,6 @@ def _get_from_cache(key: str) -> Optional[dict]:
 
 def _set_to_cache(key: str, value: dict) -> None:
     try:
-        sys.path.insert(0, str(Path(__file__).parent))
         from _common import cache_set
         cache_set("etfirst", key, value)
     except Exception:

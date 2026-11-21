@@ -1,1 +1,12 @@
+# invest-cli 开发与测试依赖（运行期不强制，只在测试/门禁里用）
+#
+# ⚠️ 本文件是**派生清单**，不是依赖真源。真源在 pyproject.toml 的
+#    [dependency-groups].dev；内容与它的对应关系由
+#    scripts/test_dependency_source_gate.py 机械对账，漂移即红。
+#    改依赖请改 pyproject.toml，再跑：
+#        python3 scripts/sync_requirements.py
+#
+# pytest 是 check.py 四门的硬前置；ruff 供 F821/F401 静态门。
+
+pytest>=8.0
 ruff>=0.6

@@ -6,7 +6,6 @@ FTYPE 字符串口径全部来自真实实测（2026-09-30，ttskill TTFUND_BASE
 """
 from __future__ import annotations
 
-import json
 from typing import Any, Optional
 
 import pytest
@@ -226,6 +225,7 @@ def test_cached_roundtrip():
 
 # ---------- 真实通道（默认跳过；INVEST_LIVE=1 时跑） ----------
 
+@pytest.mark.live
 def test_live_multi_type():
     if __import__("os").environ.get("INVEST_LIVE") != "1":
         pytest.skip("INVEST_LIVE!=1")

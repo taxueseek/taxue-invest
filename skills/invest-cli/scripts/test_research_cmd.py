@@ -91,6 +91,13 @@ def test_pool_empty_theme_fails(monkeypatch) -> None:
     assert pool == []
 
 
+def test_pool_blank_keyword_returns_three_tuple() -> None:
+    pool, notes, partial = R.build_pool("   ", 200, exclude_hk=False)
+    assert pool == []
+    assert partial is True
+    assert any("为空" in n for n in notes)
+
+
 # ── 2. 双源互证 ───────────────────────────────────────────
 
 def _env(returns: dict, deep: dict | None, source="hithink") -> dict:
@@ -185,10 +192,8 @@ def test_cross_off_when_dy_off() -> None:
 
 
 if __name__ == "__main__":
-    for fn in (test_pool_filters_and_dedup, test_pool_limit_truncates, test_pool_empty_theme_fails,
-               test_pool_partial_on_page_failure,
-               test_verify_match_and_mismatch, test_verify_na_when_deep_missing_or_same_source,
-               test_rank_orders_and_flags_missing, test_snapshot_batch_isolates_failure,
-               test_cross_labels_and_company_merge, test_cross_off_when_dy_off):
-        fn()
-    print("test_research_cmd: OK")
+    # 与 test_skill_integrity 同约定：夹具由 pytest 注入，手工调用会在
+    # `test_pool_filters_and_dedup(monkeypatch)` 上抛 TypeError（裸跑入口形同虚设）。
+    import pytest
+
+    raise SystemExit(pytest.main([__file__, "-q"]))

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invest-cli"
+version = "3.2.2"
+description = "投资分析数据层 CLI — 多源取数 + 路由 + 降级（taxue-invest 数据层）"
+readme = "SKILL.md"
+requires-python = ">=3.9"
+license = { text = "Prosperity-3.0" }
+keywords = ["investment", "finance", "cli", "data-source", "agent"]
+
+# 运行期依赖（2026-11-09 P5 收口：本段是唯一真源）。
+# requirements.txt 降级为 pip 用户的可读清单，由 scripts/sync_requirements.py
+# 从本文件派生，漂移即红（scripts/check.py 挂 --check）。
+#
+# 为什么 yfinance 留在运行期：`us` 主路依赖它，缺件会整条美股链降级；
+# 网络出口已统一收口到 sources/_http（标准库 urllib），不再直接依赖 requests。
+dependencies = [
+    "PyYAML>=6.0",
+    "yfinance>=0.2",
+    "cryptography>=41.0",
+]
+
+[project.optional-dependencies]
+# 可选：tenure --excel 导出 xlsx（缺失时自动落 CSV，不影响取数）
+xlsx = ["openpyxl>=3.1"]
+
+# 开发/测试档（由 [dependency-groups].dev 派生 requirements-dev.txt）
+# 见下方 dependency-groups。
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.setuptools]
+py-modules = []

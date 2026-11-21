@@ -37,7 +37,8 @@ description: |
 **统一走 mx-data 数据层**：
 
 ```bash
-python3 ~/.agents/skills/mx-data/scripts/get_data.py --type enterprise --code <代码> --metrics ["revenue","profit","debt_ratio","rating"]
+# <mx-data> = mx-data 技能安装目录（与本技能同批安装，路径随安装器而定）
+python3 <mx-data>/scripts/get_data.py --type enterprise --code <代码> --metrics ["revenue","profit","debt_ratio","rating"]
 ```
 
 ## 输出模板

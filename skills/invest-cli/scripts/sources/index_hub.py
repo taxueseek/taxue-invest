@@ -11,9 +11,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 # Index Hub api_client.py 路径
 _INDEX_HUB_CLIENT = (
@@ -47,7 +46,6 @@ def _cache_key(endpoint: str, code: str) -> str:
 def _get_from_cache(key: str) -> Optional[dict]:
     """从 invest-cli 缓存读取。"""
     try:
-        sys.path.insert(0, str(Path(__file__).parent))
         from _common import cache_get, CACHE_TTL_FUNDAMENTAL
         return cache_get("index_hub", key, CACHE_TTL_FUNDAMENTAL)
     except Exception:
@@ -57,7 +55,6 @@ def _get_from_cache(key: str) -> Optional[dict]:
 def _set_to_cache(key: str, value: dict) -> None:
     """写入 invest-cli 缓存。"""
     try:
-        sys.path.insert(0, str(Path(__file__).parent))
         from _common import cache_set
         cache_set("index_hub", key, value)
     except Exception:

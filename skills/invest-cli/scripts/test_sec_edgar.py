@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import pytest
+
 import sys
 from pathlib import Path
 
@@ -330,6 +332,7 @@ def test_filing_search_slices_hits_and_pairs_dates(monkeypatch) -> None:
     assert "startdt=2001-01-01" in seen["url"] and "enddt=2025-12-31" in seen["url"]
 
 
+@pytest.mark.live
 def test_fundamentals_live_smoke() -> None:
     """联网冒烟：网络不可用/被限流时跳过；解析类错误必须暴露。"""
     try:

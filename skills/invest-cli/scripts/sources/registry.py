@@ -194,12 +194,15 @@ def _probe_cache_key(key: tuple[Any, ...]) -> tuple[Any, ...]:
         return key
 
 
-def _probe_cache_path(key: tuple[Any, ...]) -> Optional[Path]:
-    """探测结果的落盘位置（全类型跨进程复用）。"""
+def _probe_cache_path(key: tuple[Any, ...], *, create: bool = True) -> Optional[Path]:
+    """探测结果的落盘位置（全类型跨进程复用）。
+
+    create=False 给查表用：一次负缓存未命中不该顺手建出目录树。
+    """
     try:
         from _common import cache_path
 
-        return cache_path("probe", repr(key))
+        return cache_path("probe", repr(key), create=create)
     except Exception:
         return None
 
@@ -222,7 +225,7 @@ def _cached(key: tuple[Any, ...], fn, fail_ttl: float | None = None) -> tuple[bo
     # 旧条件只落盘 http 型，command/adapter/dir 型每进程重付一次子进程探测
     # （实测 ~0.35s/类）。探测键已并入 cache_root（_probe_cache_key），
     # 落盘对全类型安全，不会跨缓存目录串味。
-    disk = _probe_cache_path(ckey)
+    disk = _probe_cache_path(ckey, create=False)
     if disk is not None:
         try:
             if disk.is_file():
@@ -252,6 +255,8 @@ def _cached(key: tuple[Any, ...], fn, fail_ttl: float | None = None) -> tuple[bo
 
     if disk is not None:
         try:
+            # 目录只在真正落盘时建（查表用 create=False，读路径零写副作用）
+            disk.parent.mkdir(parents=True, exist_ok=True)
             # 临时名带 pid：CLI 每进程独立，共用同一个 .tmp 会让并发写者互相截断
             tmp = disk.with_name(f"{disk.name}.{os.getpid()}.tmp")
             payload = {"ok": ok, "detail": detail}
@@ -385,9 +390,13 @@ def detect_all() -> dict[str, dict[str, Any]]:
     return out
 
 
-def available_ids() -> list[str]:
-    """仅返回探测可用的数据源 id，按 priority 降序。"""
-    states = detect_all()
+def available_ids(states: Optional[dict[str, dict[str, Any]]] = None) -> list[str]:
+    """仅返回探测可用的数据源 id，按 priority 降序。
+
+    可传入已有的 detect_all() 结果：调用方已经探过一次时不必再探一遍
+    （doctor 的 check_sources 曾因此把 0.3s 级的并行探测跑两次）。
+    """
+    states = detect_all() if states is None else states
     ranked = sorted(
         states.items(), key=lambda kv: kv[1].get("priority", 0), reverse=True
     )

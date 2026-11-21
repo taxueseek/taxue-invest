@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .venv/
+
+# 过程报告归档（本机可追溯，不进公开仓；对齐 argo docs-local/）
+docs-local/

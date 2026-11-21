@@ -21,7 +21,6 @@ import json
 import sys
 import unicodedata
 
-from sources import sec_edgar
 
 
 def _disp_width(s: str) -> int:
@@ -63,6 +62,8 @@ def _fmt_usd(value) -> str:
 
 
 def format_terminal(data: dict) -> str:
+    from sources import sec_edgar
+
     lines: list[str] = []
     ticker = data.get("ticker") or ""
     name = data.get("name") or ticker
@@ -207,11 +208,31 @@ def format_holdings(data: dict) -> str:
 ACTIONS = ("holdings", "insiders", "events", "search")
 
 
+def _brief_snapshot(res: dict) -> dict:
+    """快照的 `--brief`：砍掉 5 年年度序列（体积主体），保留最新指标与申报清单。
+
+    为什么单独给 sec：companyfacts 的 series 是 22 个指标 × 多年的矩阵，默认
+    快照 28.5KB，经 agent 工具（24k 字符上限）会被截成坏 JSON。题面只问
+    「营收/净利多少」时，series 是纯陪跑。
+    """
+    data = dict(res.get("data") or {})
+    series = data.pop("series", None)
+    quarterly = data.pop("quarterly", None)
+    if series is not None:
+        data["series_omitted"] = len(series or {})
+    if quarterly is not None:
+        data["quarterly_omitted"] = True
+    data["brief"] = True
+    return {**res, "data": data}
+
+
 def run(ticker: str, forms: str = "", limit: int = 5, as_json: bool = False,
         years: int = 5, quarterly: bool = False, search: str = "",
         from_ym: str = "", to_ym: str = "", insiders: bool = False,
         events_flag: bool = False, holdings: bool = False, days: int = -1,
-        rows_limit: int = 0) -> int:
+        rows_limit: int = 0, brief: bool = False) -> int:
+    from sources import sec_edgar
+
     # `sec_edgar.filings` 内部用 `max(1, limit)` 兜底，所以 `--filings 0` 会
     # 静默返回 1 条、`--filings -3` 同样返回 1 条——参数被无声吞掉。
     # 「最近 0 条申报」本身没有意义，属于调用方写错，边界上直接报错比给一条
@@ -255,6 +276,10 @@ def run(ticker: str, forms: str = "", limit: int = 5, as_json: bool = False,
                                  years=years, quarterly=quarterly)
 
     if as_json:
+        # brief 只作用于「快照」这一个动作；检索/内部人/事件/13F 没有 series，
+        # 加了 brief 也不该改变它们的形状。
+        if brief and not any((search, insiders, events_flag, holdings)):
+            res = _brief_snapshot(res)
         print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
         return 0 if res.get("ok") else 1
     if not res.get("ok"):

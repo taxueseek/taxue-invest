@@ -49,10 +49,12 @@ from ._http import guarded_open
 import json
 import re
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from typing import Any, Optional
+
+# urllib 延迟导入：模块级 import urllib.request 在冷启动时 ~44ms（含 ssl 上下文
+# 初始化）。本模块的 quote/search 走 _http.guarded_open（已有自己的 urllib 引用），
+# 只有少数辅助函数直接用到 urllib.parse/error——改为函数内延迟导入，让不触达
+# 这些路径的子命令（如 datasources/capabilities）零成本。
 
 # ── 端点（腾讯公开行情接口，无需鉴权） ──────────────────────────────────────
 QT_URL = "https://qt.gtimg.cn/q={codes}"
@@ -249,6 +251,7 @@ class TencentError(RuntimeError):
 
 def _http_get(url: str, encoding: str = "utf-8") -> str:
     """带重试的 GET。失败抛 TencentError（由调用方转成 ok=False 信封）。"""
+    import urllib.request
     last: Optional[Exception] = None
     for attempt in range(_RETRY):
         try:
@@ -261,7 +264,7 @@ def _http_get(url: str, encoding: str = "utf-8") -> str:
                               allowed_host=("qt.gtimg.cn", "web.ifzq.gtimg.cn",
                                             "ifzq.gtimg.cn", "proxy.finance.qq.com")) as resp:
                 return resp.read().decode(encoding, "replace")
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+        except (TimeoutError, OSError) as e:
             last = e
             if attempt < _RETRY - 1:
                 time.sleep(0.3)
@@ -452,6 +455,7 @@ def search(keyword: str, limit: int = 10) -> list[dict]:
         hit = cache_get("tencent_search", ckey, _SEARCH_TTL)
         if isinstance(hit, list):
             return hit
+    import urllib.parse
     url = f"{SEARCH_URL}?{urllib.parse.urlencode({'q': kw})}"
     try:
         payload = json.loads(_http_get(url))
@@ -538,8 +542,10 @@ _PERIOD_ALIAS = {"d": "day", "day": "day", "daily": "day", "日": "day", "日线
 # ── 适配器对外接口 ────────────────────────────────────────────────────────
 
 def _envelope(kind: str, ok: bool, data: Any = None, error: str = "") -> dict:
-    return {"source": "tencent", "kind": kind, "ok": ok,
-            "data": data if ok else None, "error": error or None}
+    """本源的出口。构造收口到 sources/envelope（P1，2026-11-09）。"""
+    from .envelope import envelope
+
+    return envelope("tencent", kind, ok, data=data, error=error or None)
 
 
 def _resolve_one(raw: str) -> str:
@@ -973,6 +979,7 @@ def kline(code: str, period: str = "day", limit: int = 60) -> dict:
     if period == "year":
         fetch_period, fetch_limit = "month", min(limit * 12 + 12, 2000)
     param = f"{code_n},{fetch_period},,,{fetch_limit},qfq"
+    import urllib.parse
     url = f"{KLINE_URL}?param={urllib.parse.quote(param, safe=',')}"
     try:
         payload = json.loads(_http_get(url))

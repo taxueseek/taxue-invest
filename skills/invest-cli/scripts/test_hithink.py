@@ -2,6 +2,8 @@
 """hithink adapter tests — default run needs no live network and never prints the Key."""
 from __future__ import annotations
 
+import pytest
+
 import json
 import os
 import sys
@@ -323,6 +325,7 @@ def test_registry_hithink(monkeypatch, tmp_path) -> None:
     assert "test-key-not-real" not in detail
 
 
+@pytest.mark.live
 def test_live_optional() -> None:
     if os.environ.get("INVEST_LIVE") != "1":
         return
@@ -389,16 +392,83 @@ def test_indicators_fallback_when_guessed_year_is_wrong(monkeypatch) -> None:
     assert reports == ["2019-4", "2025-4"], f"补取逻辑不对: {reports}"
 
 
+# ── 搜索结果缓存（代码/名称 → thscode，落盘 24h） ──
+# 为什么值得缓存：search 是快照链的**串行前置**，每次快照未命中都要重付一次；
+# 实测中位 126–150ms、新连接 590–640ms，占 stock/fund 冷取 15–40%。而代码与
+# 名称的对应关系几乎不变。这组用例锁住四条语义，改缓存逻辑时不能擅自放宽。
+
+
+def _search_router(calls: list[str]):
+    """只响应 tickers/search；记录每次被真实请求的 url。"""
+    def fake_get(url, headers=None):
+        calls.append(url)
+        return 200, _ok({"item": [
+            {"thscode": "600519.SH", "name": "贵州茅台", "asset_type": "a-share", "ticker": "600519"},
+        ]})
+    return fake_get
+
+
+def test_search_result_is_cached(monkeypatch) -> None:
+    """第二次 search 不付网络往返（同一进程、同一缓存目录）。
+
+    没有注入 `http_get` 参数，走的是**生产路径**（缓存启用），只把底层 HTTP
+    换成桩——这样既是离线用例，又真的在测缓存开关。
+    """
+    calls: list[str] = []
+    monkeypatch.setattr("sources.hithink._default_http_get", _search_router(calls))
+    from sources import hithink as h
+
+    first, err = h._search("600519", api_key="k")
+    assert err is None and first[0]["thscode"] == "600519.SH"
+    second, err2 = h._search("600519", api_key="k")
+    assert err2 is None and second == first
+    assert len(calls) == 1, f"第二次 search 仍发了请求（{len(calls)} 次），缓存没生效"
+
+
+def test_search_cache_key_separates_asset_type(monkeypatch) -> None:
+    """同一串代码在不同 asset_type 下不能互相顶掉（股票结果不能答基金问题）。"""
+    from _common import cache_get, cache_set
+    from sources import hithink as h
+
+    cache_set("hithink_search", "005827|", [{"thscode": "STOCK-POISON"}])
+    cache_set("hithink_search", "005827|fund-otc", [{"thscode": "005827.OF"}])
+    items, _ = h._search("005827", api_key="k", asset_type="fund-otc")
+    assert items[0]["thscode"] == "005827.OF"
+    assert cache_get("hithink_search", "005827|", 86400)[0]["thscode"] == "STOCK-POISON"
+
+
+def test_empty_search_is_not_cached(monkeypatch) -> None:
+    """空结果不落盘：「查无此标的」可能是新上市或上游抖动，不能被钉住 24h。"""
+    from _common import cache_get
+    from sources import hithink as h
+
+    def empty_get(url, headers=None):
+        return 200, _ok({"item": []})
+
+    monkeypatch.setattr("sources.hithink._default_http_get", empty_get)
+    items, err = h._search("zzzz-nothing", api_key="k")
+    assert items == [] and err is None
+    assert cache_get("hithink_search", "zzzz-nothing|", 86400) is None, "空结果被缓存了"
+
+
+def test_injected_http_get_bypasses_cache(monkeypatch) -> None:
+    """注入 getter（单测路径）必须直通：读不命中、写不落盘。
+
+    否则「本机缓存里有什么」会决定单测结论，换台机器就假绿或假红。
+    """
+    from _common import cache_set
+    from sources import hithink as h
+
+    cache_set("hithink_search", "600519|", [{"thscode": "CACHED-POISON"}])
+    calls: list[str] = []
+    items, _ = h._search("600519", api_key="k", http_get=_search_router(calls))
+    assert len(calls) == 1, "注入 getter 时不应命中缓存"
+    assert items[0]["thscode"] != "CACHED-POISON"
+
+
 if __name__ == "__main__":
-    test_request_many_injected_client_is_serial()
-    test_looks_like_hk()
-    test_pick_ticker_exact_and_ambiguous()
-    test_parse_indicators_array_not_object()
-    test_build_history_null_not_zero()
-    test_stock_hk_no_http()
-    test_stock_ok_mock()
-    test_fund_ok_mock()
-    test_fund_subrequest_failure_envelope_false()
-    test_registry_hithink()
-    test_live_optional()
-    print("test_hithink: OK")
+    # 裸跑交给 pytest：手工逐个调用会在 `test_registry_hithink(monkeypatch, tmp_path)`
+    # 上抛 TypeError，等于「裸跑入口」本身是坏的。与 test_skill_integrity 同约定。
+    import pytest
+
+    raise SystemExit(pytest.main([__file__, "-q"]))

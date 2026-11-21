@@ -7,7 +7,9 @@ key 读取：环境变量 EASTMONEY_APIKEY 或用户级凭据文件（env_or_fil
 """
 from __future__ import annotations
 
+import json
 import sys
+import urllib.error
 from pathlib import Path
 from typing import Any
 
@@ -59,9 +61,13 @@ def load_api_key() -> str:
     return read_credential_file(ENV_KEY, credential_files())
 
 
-# 可用性探测统一走 data-sources.yaml（type: env_or_file / EASTMONEY_APIKEY），见 sources/registry.py
-# 注意：不再在此维护模块级 detect()——registry 的 env_or_file 探测会调用适配器 detect，
-# 但本模块刻意不提供：KEY 文件按 registry 的 files 列表声明，多实现必漂移。
+# 可用性探测：本模块自带 detect()（见上方），判据与 load_api_key() 逐字一致，
+# 「读到 key」与「key 非空」是同一个结论。
+# data-sources.yaml 里 eastmoney 声明了 `adapters: [eastmoney]`，registry 的
+# env_or_file 分支因此优先 import 本模块的 detect()（registry.py:299-310），
+# 那条「只看文件存在」的通用回退（registry.py:315-320）对东财到不了。
+# 注意是「到不了」而不是「被删掉」：回退代码仍在 registry 里，靠的是 yaml 的
+# adapters 声明走到上面这条分支，改 yaml 时别把该行去掉。
 
 
 def _wrap(kind: str, snap: Any) -> dict:
@@ -112,26 +118,30 @@ def fund(keyword: str) -> dict:
 
 
 def screen(condition: str, page_size: int = 20) -> dict:
-    import requests
-
     api_key = load_api_key()
     if not api_key:
         return {"source": "eastmoney", "kind": "screen", "ok": False, "data": None,
                 "error": "未设置 EASTMONEY_APIKEY（env 或 ~/.config/invest-cli/eastmoney.env）"}
     url = "https://mkapi2.dfcfs.com/finskillshub/api/claw/stock-screen"
     try:
-        resp = requests.post(
+        from ._http import guarded_request
+
+        status, body, _headers = guarded_request(
             url,
             headers={"apikey": api_key, "Content-Type": "application/json"},
-            json={"keyword": condition, "pageNo": 1, "pageSize": page_size},
+            json_body={"keyword": condition, "pageNo": 1, "pageSize": page_size},
             timeout=30,
+            allowed_host="mkapi2.dfcfs.com",
         )
-        resp.raise_for_status()
-    except requests.RequestException as e:
+    except (ValueError, OSError, urllib.error.URLError) as e:
         return {"source": "eastmoney", "kind": "screen", "ok": False, "data": None, "error": f"东财选股失败: {e}"}
+    if status < 200 or status >= 300:
+        snippet = body[:200].decode("utf-8", errors="replace").replace("\n", " ")
+        return {"source": "eastmoney", "kind": "screen", "ok": False, "data": None,
+                "error": f"东财选股 HTTP {status}: {snippet}"}
     try:
-        payload = resp.json()
-    except ValueError as e:
+        payload = json.loads(body.decode("utf-8", errors="replace"))
+    except (ValueError, UnicodeDecodeError) as e:
         return {"source": "eastmoney", "kind": "screen", "ok": False, "data": None,
                 "error": f"东财选股返回非 JSON: {e}"}
     return {"source": "eastmoney", "kind": "screen", "ok": True, "data": payload, "error": None}

@@ -22,15 +22,16 @@ tiingo 承担，本源与 sec_edgar 分工：
 单位纪律（与 cmd_us 渲染器约定对齐）：change_pct 百分数（FMP 原生就是百分数）；
 margins/dividend_yield 小数（FMP 原生小数，直传）；market_cap 绝对值。
 
-安全约束（与 sources/tiingo.py 同一套四层闸）：仅 https；host 白名单；请求前 DNS
-解析拒私网（豁免 Clash TUN fake-ip 段，见 tiingo.py 顶部注释）；禁重定向。
+安全约束（SSRF 闸）：_get_json 是唯一 HTTP 出口，四层闸（仅 https / host 白名单
+/ 请求前 DNS 逐 IP 公网校验 / 禁重定向）全部收口在 sources/_http.guarded_open——
+tiingo 与本模块曾各持一份内联实现、与 _http 三处并行，闸的任何一层演进都要同步
+三处，漏一处就是真实缺口（第九轮 2026-11-08 并口）。本模块只保留信封语义与
+402 付费墙 / 覆盖外的文案分流。
 """
 from __future__ import annotations
 
-import ipaddress
 import json
 import re
-import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,6 +39,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+
+from ._http import guarded_open
 
 SOURCE_LABEL = "FMP 美股深取"
 API_HOST = "financialmodelingprep.com"
@@ -47,33 +50,6 @@ DEFAULT_TIMEOUT = 15
 PROBE_USER_AGENT = "invest-cli/1.0 (fmp source)"
 
 _TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,11}$")
-# 与 tiingo.py 同一份 fake-ip 豁免表（Clash/Mihomo TUN，本机全部域名都解析到这两段）
-_FAKE_IP_NETS = tuple(
-    ipaddress.ip_network(n) for n in ("198.18.0.0/15", "2001:2::/48")
-)
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """一概拒绝重定向：新目标不会过 host 白名单与私网校验，跟随即绕闸。"""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N802
-        return None
-
-
-_OPENER = urllib.request.build_opener(_NoRedirect)
-
-
-def _assert_public_host(hostname: str) -> None:
-    infos = socket.getaddrinfo(hostname, 443, proto=socket.IPPROTO_TCP)
-    if not infos:
-        raise ValueError(f"{hostname} DNS 解析为空")
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if any(ip in net for net in _FAKE_IP_NETS):
-            continue  # 透明代理 fake-ip：按域名转出，不落内网
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                or ip.is_multicast or ip.is_unspecified):
-            raise ValueError(f"{hostname} 解析到非公网地址 {ip}，拒绝请求")
 
 
 def credential_files() -> list[Path]:
@@ -105,8 +81,9 @@ def normalize_ticker(symbol: str) -> str:
 
 
 def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[Optional[Any], Optional[str]]:
-    """唯一 HTTP 出口：https + host 白名单 + DNS 公网校验 + 禁重定向。
+    """唯一 HTTP 出口：闸（https/白名单/逐 IP 公网校验/禁重定向）走共享 guarded_open。
 
+    本函数只保留信封语义：(payload, err) 元组与错误文案分流。
     402 的两种文案必须分流（实测同码不同义）：
       - "Restricted Endpoint" → 该**端点**在付费墙内
       - "Premium Query Parameter"/"Special Endpoint" → 该**标的**不在订阅覆盖
@@ -118,14 +95,12 @@ def _get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[Optional[Any], 
         return None, "URL 非法"
     if parts.scheme != "https" or parts.hostname != API_HOST:
         return None, f"拒绝非 {API_HOST} 的 https 请求"
-    try:
-        _assert_public_host(parts.hostname)
-    except (OSError, ValueError) as e:
-        return None, f"host 校验拒绝: {e}"
     req = urllib.request.Request(url, headers={"User-Agent": PROBE_USER_AGENT})
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with guarded_open(req, timeout=timeout, allowed_host=API_HOST) as resp:
             body = resp.read().decode("utf-8", errors="replace")
+    except ValueError as e:
+        return None, f"host 校验拒绝: {e}"
     except urllib.error.HTTPError as e:
         raw = ""
         try:
@@ -194,7 +169,10 @@ def _fetch_rating(ticker: str) -> tuple[Optional[dict], Optional[str]]:
 
 
 def _envelope(kind: str, ok: bool, data: Any = None, error: str = "") -> dict[str, Any]:
-    return {"source": "fmp", "kind": kind, "ok": ok, "data": data, "error": error}
+    """本源的出口。构造收口到 sources/envelope（P1，2026-11-09）。"""
+    from .envelope import envelope
+
+    return envelope("fmp", kind, ok, data=data, error=error or None)
 
 
 # TTM 比率透传白名单：免费档有值的部分（ROE/ROA=null 不放进来占位，
@@ -274,6 +252,8 @@ def deep_snapshot(symbol: str) -> dict[str, Any]:
         "avg_volume": quote_raw.get("avgVolume") or quote_raw.get("averageVolume"),
         "market_cap": quote_raw.get("marketCap"),
         "beta": quote_raw.get("beta"),
+        "pe_trailing": quote_raw.get("pe"),
+        "pb": quote_raw.get("pb"),
         "price_avg_50": quote_raw.get("priceAvg50"),
         "price_avg_200": quote_raw.get("priceAvg200"),
     }
@@ -319,6 +299,45 @@ def deep_snapshot(symbol: str) -> dict[str, Any]:
     }
     data["business"] = {k: v for k, v in data["business"].items() if v is not None}
     return _envelope("fmp_deep", True, data=data)
+
+
+def us(symbol: str) -> dict[str, Any]:
+    """美股快照（快照链末位兜底）：把深取结果收敛成 cmd_us 的统一形状。
+
+    为什么在链尾而不是链首：免费档 250 次/天，且一次快照要 5 个请求；
+    放在 bitget 之后意味着只有前面四源全败时才会消耗配额。能力上是全链最全的
+    基本面兜底（三表比率 + 评级 + 公司信息），代价是延迟与配额，故只做最后一道。
+    """
+    deep = deep_snapshot(symbol)
+    if not deep.get("ok"):
+        return _envelope("us", False, error=str(deep.get("error") or f"FMP 无 {symbol} 的行情"))
+    d = deep.get("data") or {}
+    q = d.get("quote") or {}
+    if q.get("price") is None:
+        return _envelope("us", False, error=f"FMP 无 {symbol} 的价格")
+    financial = d.get("financial") or {}
+    snapshot = {
+        "source": "fmp",
+        "symbol": d.get("symbol") or normalize_ticker(symbol),
+        "name": d.get("name") or normalize_ticker(symbol),
+        "currency": d.get("currency") or "USD",
+        "timestamp": d.get("timestamp") or datetime.now().isoformat(),
+        # FMP 免费档有延迟，且非交易所直连；与 tiingo 的 eod 标记同型，不冒充实时。
+        "quote_basis": "delayed",
+        "quote": {
+            k: q.get(k)
+            for k in ("price", "change_pct", "market_cap", "pe_trailing", "pb",
+                      "dividend_yield", "beta", "year_high", "year_low")
+            if q.get(k) is not None
+        },
+        "financial": financial,
+        "analyst": d.get("rating") or {},
+        "risk": {"beta": q.get("beta"), "max_drawdown_1y": None},
+        "business": d.get("business") or {},
+    }
+    if financial.get("dividend_yield") is not None:
+        snapshot["quote"].setdefault("dividend_yield", financial["dividend_yield"])
+    return _envelope("us", True, data=snapshot)
 
 
 def analyst_estimates(symbol: str) -> dict[str, Any]:

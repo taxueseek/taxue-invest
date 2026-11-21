@@ -1,19 +1,26 @@
-"""research 子命令：长程研究管线（fund-rank）。
+"""research 子命令：长程研究管线（fund-rank / etf-rank）。
 
 用法:
     invest-cli research fund-rank <主题> [--top N] [--order r3y|r1y|ytd]
                   [--limit N] [--dy auto|on|off] [--enrich] [--out DIR] [--json]
+    invest-cli research etf-rank <指数代码或名称> [--top N] [--period 1y]
+                  [--components N] [--limit N] [--out DIR] [--json]
 
-管线（对齐 2026-10-11 红利基金交叉分析的十轮手工调用，收敛为一条命令）：
+fund-rank 管线（对齐 2026-10-11 红利基金交叉分析的十轮手工调用，收敛为一条命令）：
     池构建(TTFUND_SEARCH 分页,名称子串搜索) → 份额类去重 → 批量快照
     (复用 cmd_fund.fetch_fund_with_fallback——与 `invest-cli fund` 同一条路径,
     有界并发、逐只失败隔离) → 按多期业绩排名 → 重仓×股息率交叉(公司名合并,
     A/H 同司一司) → 双源互证(hithink returns vs ttskill 深取字段,不一致显式标注)
     → 终端表 / --out 落盘(report.md + result.json) / --json 信封。
 
+etf-rank 管线：TTFUND_INDEX_FUND_SELECTION 一次取回指数候选、同指数基金横评、
+成分股与指数估值，按接口 score 排序；评分口径与 risk_note 原样透出，不在本地
+重新定义。字段路径以真实回包为准，同时兼容文档写的 raw_result.body 嵌套。
+
 设计约束：
 - 本模块**只编排,不自建取数路径**：快照走 fetch_fund_with_fallback（原生体验
-  同源同缓存），股息率参照集走 route.fetch("screen", …)（妙想），资讯走 argo。
+  同源同缓存），股息率参照集走 route.fetch("screen", …)（妙想），资讯走 argo，
+  指数基金横评走 ttskill 官方业务包。
 - 每个数字带 provenance（来源/口径/检索时间）；互证不一致进 warnings，不静默。
 - 批量并发默认 3（INVEST_CLI_RESEARCH_CONCURRENCY 可调）。同花顺合同配额
   未知，调高前先用小池试。
@@ -78,7 +85,7 @@ def build_pool(theme: str, limit: int, *, exclude_hk: bool) -> tuple[list[dict],
     notes: list[str] = []
     keyword = _fund_search_keyword(theme)
     if not keyword:
-        return [], ["主题提炼为空"]
+        return [], ["主题提炼为空"], True
     queries = _alias_queries(keyword)
     if len(queries) > 1:
         notes.append("别名检索「股息」已并入（红利主题基金名常只含「股息」）")
@@ -212,7 +219,6 @@ def rank_funds(snaps: dict[str, dict], order: str,
         if v is None:
             missing.append(code)
             continue
-        data = env.get("data") or {}
         rows.append({
             "code": code,
             "name": (full_names or {}).get(code) or env.get("name"),
@@ -372,13 +378,305 @@ def enrich_news(ranked: list[dict], top_n: int) -> tuple[list[dict], list[str]]:
     return out, notes
 
 
+# ── 5b. 指数基金横评（TTFUND_INDEX_FUND_SELECTION） ───────
+
+# 周期别名 → 接口 period_code（skill 文档：00近1月 / 01近3月 / 02近半年 /
+# 03近1年 / 05近3年 / 06近5年）。用可读别名，避免调用方记两位码。
+_ETF_PERIODS = {"1m": "00", "3m": "01", "6m": "02", "1y": "03", "3y": "05", "5y": "06"}
+_ETF_PERIOD_LABELS = {"00": "近1月", "01": "近3月", "02": "近半年",
+                      "03": "近1年", "05": "近3年", "06": "近5年"}
+_ETF_SMALL_SCALE_YI = 2.0
+
+
+def _fnum(v) -> float | None:
+    """数值字段归一：非数字返回 None（接口用 null 表示缺失，不能当 0）。"""
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _f1(v) -> str:
+    return f"{v:.1f}" if isinstance(v, (int, float)) else "-"
+
+
+def _f2(v) -> str:
+    return f"{v:.2f}" if isinstance(v, (int, float)) else "-"
+
+
+def _etf_request(theme: str, period_code: str, components: int) -> dict:
+    """指数代码走 index_codes，名称/关键词走 keyword；top_n 是**成分股**条数。"""
+    body: dict = {"period_codes": [period_code],
+                  "top_n": max(1, min(int(components), 50))}
+    if re.fullmatch(r"\d{6}", theme):
+        body["index_codes"] = [theme]
+    else:
+        body["keyword"] = theme
+    return body
+
+
+def _selection_of(data) -> dict:
+    """取 selection_result；兼容文档写的 data.raw_result.body 与实际 data 直挂。"""
+    if not isinstance(data, dict):
+        raise ValueError("回包缺少 data")
+    node = data
+    raw = node.get("raw_result")
+    if isinstance(raw, dict) and isinstance(raw.get("body"), dict):
+        node = raw["body"]
+    sr = node.get("selection_result")
+    if not isinstance(sr, dict):
+        raise ValueError("回包缺少 selection_result（ttskill 版本可能已变）")
+    return sr
+
+
+def _parse_etf(sr: dict) -> dict:
+    """解析横评结果。结构缺失就报错，不返回空表——空表会被误读成「没有基金」。"""
+    body = sr.get("data")
+    if not isinstance(body, dict):
+        raise ValueError(f"selection_result 缺少 data（{sr.get('code')}: {sr.get('message')}）")
+    raw_funds = body.get("fund_items")
+    if not isinstance(raw_funds, list) or not raw_funds:
+        raise ValueError(f"回包 fund_items 为空（{sr.get('code')}: {sr.get('message')}）")
+
+    funds = []
+    for it in raw_funds:
+        if not isinstance(it, dict) or not it.get("fund_code"):
+            continue
+        funds.append({
+            "code": str(it.get("fund_code")),
+            "name": str(it.get("fund_name") or ""),
+            "company": str(it.get("fund_company") or ""),
+            "scale_yi": _fnum(it.get("fund_size_yi")),
+            "management_fee": _fnum(it.get("management_fee")),
+            "custodian_fee": _fnum(it.get("custodian_fee")),
+            "total_fee": _fnum(it.get("total_fee")),
+            "tracking_error": _fnum(it.get("tracking_error")),
+            "excess_return": _fnum(it.get("excess_return")),
+            "information_ratio": _fnum(it.get("information_ratio")),
+            "correlation": _fnum(it.get("correlation")),
+            "score": _fnum(it.get("score")),
+            "risk_note": str(it.get("risk_note") or ""),
+            "metric_date": str(it.get("metric_date") or ""),
+        })
+    if not funds:
+        raise ValueError("fund_items 里没有可用的基金代码")
+    funds.sort(key=lambda r: (r["score"] is None, -(r["score"] or 0.0),
+                              -(r["scale_yi"] or 0.0), r["code"]))
+
+    first = raw_funds[0] if isinstance(raw_funds[0], dict) else {}
+    cands = [{"code": str(c.get("index_code") or ""),
+              "name": str(c.get("index_name") or ""),
+              "fund_count": c.get("fund_count")}
+             for c in (body.get("index_candidates") or []) if isinstance(c, dict)]
+
+    raw_comps = [c for c in (body.get("component_items") or []) if isinstance(c, dict)]
+    comps = [{"code": str(c.get("stock_code") or ""),
+              "name": str(c.get("stock_name") or ""),
+              "weight_pct": _fnum(c.get("weight_pct"))} for c in raw_comps]
+    comp0 = raw_comps[0] if raw_comps else {}
+    comp_meta = {
+        "trade_date": str(comp0.get("component_trade_date") or ""),
+        "count": comp0.get("component_count"),
+        "top10_weight_pct": _fnum(comp0.get("top10_weight_pct")),
+    }
+
+    raw_val = next((v for v in (body.get("valuation_items") or [])
+                    if isinstance(v, dict)), None)
+    valuation = None
+    if raw_val:
+        valuation = {k: raw_val.get(k) for k in (
+            "trade_date", "pe_ttm", "pb", "roe_pct",
+            "pe_percentile_3y", "pe_percentile_5y", "pe_percentile_10y",
+            "pb_percentile_3y", "pb_percentile_5y", "pb_percentile_10y",
+            "valuation_level", "quadrant", "note")}
+
+    return {
+        "index_code": str(first.get("index_code") or ""),
+        "index_name": str(first.get("index_name") or ""),
+        "funds": funds,
+        "candidates": cands,
+        "components": comps,
+        "component_meta": comp_meta,
+        "valuation": valuation,
+        "score_note": str(body.get("score_note") or ""),
+    }
+
+
+def _run_etf(theme: str, *, top: int, period: str, limit: int, components: int,
+             out: str, as_json: bool) -> int:
+    theme = (theme or "").strip()
+    if not theme:
+        print("research etf-rank 错误: 需要指数代码或名称（如 000300 / 沪深300）",
+              file=sys.stderr)
+        return 1
+    period_code = _ETF_PERIODS.get(period)
+    if not period_code:
+        print(f"research etf-rank 错误: --period 仅支持 {'/'.join(_ETF_PERIODS)}",
+              file=sys.stderr)
+        return 1
+    if top < 1 or limit < 1:
+        print("research etf-rank 错误: --top / --limit 必须为正整数", file=sys.stderr)
+        return 1
+
+    from sources.ttskill import invoke_scene
+
+    raw = invoke_scene("TTFUND_INDEX_FUND_SELECTION",
+                       _etf_request(theme, period_code, components))
+    if not raw.get("ok"):
+        print(f"research etf-rank 失败：{raw.get('error')}", file=sys.stderr)
+        return 1
+    try:
+        parsed = _parse_etf(_selection_of(raw.get("data")))
+    except ValueError as e:
+        print(f"research etf-rank 失败：{e}", file=sys.stderr)
+        return 1
+
+    returned = parsed["funds"][:limit]
+    for i, row in enumerate(returned, 1):
+        row["rank"] = i
+    result = {
+        "source": "research", "scene": "etf-rank", "index": theme,
+        "index_code": parsed["index_code"],
+        "index_name": parsed["index_name"] or theme,
+        "period": period, "period_code": period_code,
+        "period_label": _ETF_PERIOD_LABELS[period_code],
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "top": top,
+        "provenance": {
+            "data_path": "ttskill:TTFUND_INDEX_FUND_SELECTION → selection_result.data",
+            "score_note": parsed["score_note"],
+            "score_basis": "接口 score：跟踪误差45% / 规模30% / 费率25%，未含成交额",
+            "risk_note_rule": "risk_note 非空原样展示；规模<2亿单独汇总",
+            "small_scale_threshold_yi": _ETF_SMALL_SCALE_YI,
+        },
+        "fund_count": len(parsed["funds"]),
+        "returned": len(returned),
+        "truncated": len(parsed["funds"]) > len(returned),
+        "small_scale": [{"code": f["code"], "name": f["name"], "scale_yi": f["scale_yi"]}
+                        for f in parsed["funds"]
+                        if f["scale_yi"] is not None and f["scale_yi"] < _ETF_SMALL_SCALE_YI],
+        "index_candidates": parsed["candidates"],
+        "funds": returned,
+        "component_meta": parsed["component_meta"],
+        "components": parsed["components"],
+        "valuation": parsed["valuation"],
+    }
+
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        _print_etf_terminal(result)
+    if out:
+        _write_etf_out(Path(out), result)
+        print(f"产物已落盘 {out}/（report.md + result.json）", file=sys.stderr)
+    return 0
+
+
+def _print_etf_terminal(result: dict) -> None:
+    trunc = "（已截断，--limit 可调）" if result["truncated"] else ""
+    shown = min(result["top"], result["returned"])
+    print(f"\n✅ {result['index_name']}（{result['index_code'] or result['index']}）"
+          f"指数基金横评｜周期 {result['period_label']}｜"
+          f"{result['fund_count']} 只，展示前 {shown}{trunc}")
+    note = result["provenance"]["score_note"]
+    if note:
+        print(f"   评分口径：{note}")
+    print(f"\n  {'排名':<6}{'代码':<8}{'名称':<24}{'规模亿':>8}"
+          f"{'跟踪误差':>9}{'总费率%':>8}{'得分':>7}")
+    print("  " + "-" * 74)
+    for r in result["funds"][:result["top"]]:
+        print(f"  {r['rank']:<6}{r['code']:<8}{r['name']:<24}"
+              f"{_f1(r['scale_yi']):>8}{_f2(r['tracking_error']):>9}"
+              f"{_f2(r['total_fee']):>8}{_f1(r['score']):>7}")
+
+    v = result["valuation"]
+    if v:
+        bits = []
+        if v.get("pe_ttm") is not None:
+            bits.append(f"PE-TTM {_f2(v['pe_ttm'])}"
+                        + (f"（5年分位 {_f1(v.get('pe_percentile_5y'))}%）"
+                           if v.get("pe_percentile_5y") is not None else ""))
+        if v.get("pb") is not None:
+            bits.append(f"PB {_f2(v['pb'])}"
+                        + (f"（5年分位 {_f1(v.get('pb_percentile_5y'))}%）"
+                           if v.get("pb_percentile_5y") is not None else ""))
+        if v.get("valuation_level"):
+            bits.append(str(v["valuation_level"]))
+        if v.get("quadrant"):
+            bits.append(str(v["quadrant"]))
+        if bits:
+            print("\n  指数估值（辅助，不是买卖信号）：" + "｜".join(bits))
+
+    comps = result["components"]
+    if comps:
+        meta = result["component_meta"]
+        print(f"\n  前{len(comps)}大成分（{meta.get('trade_date') or '-'}，"
+              f"共 {meta.get('count') if meta.get('count') is not None else '-'} 只，"
+              f"前十集中度 {_f2(meta.get('top10_weight_pct'))}%）")
+        print("     " + "、".join(f"{c['name']}{_f2(c['weight_pct'])}%" for c in comps))
+
+    risky = [r for r in result["funds"][:result["top"]] if r["risk_note"]]
+    if risky:
+        print("\n  ⚠ 风险提示：")
+        for r in risky:
+            print(f"     {r['name']}（{r['code']}）：{r['risk_note']}")
+
+    small = result["small_scale"]
+    if small:
+        shown = "、".join(f"{x['name']}({x['code']})" for x in small[:8])
+        more = f" 等 {len(small)} 只" if len(small) > 8 else ""
+        print(f"\n  ⚠ 规模<{_ETF_SMALL_SCALE_YI:g}亿（清盘风险）：{shown}{more}")
+
+
+def _write_etf_out(out_dir: Path, result: dict) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "result.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    v = result["valuation"] or {}
+    lines = [
+        f"# 指数基金横评：{result['index_name']}（{result['index_code'] or result['index']}）",
+        "",
+        f"> 生成于 {result['generated_at']}｜周期 {result['period_label']}｜"
+        f"基金 {result['fund_count']} 只，列出前 {result['returned']}",
+        f"> 数据路径：{result['provenance']['data_path']}",
+        f"> 评分口径：{result['provenance']['score_basis']}",
+    ]
+    if result["provenance"]["score_note"]:
+        lines.append(f"> 接口说明：{result['provenance']['score_note']}")
+    lines += ["", "## 横评", "",
+              "| 排名 | 代码 | 名称 | 规模(亿) | 跟踪误差 | 总费率% | 得分 | 风险提示 |",
+              "|---|---|---|---|---|---|---|---|"]
+    for r in result["funds"]:
+        lines.append(f"| {r['rank']} | {r['code']} | {r['name']} | {_f1(r['scale_yi'])} | "
+                     f"{_f2(r['tracking_error'])} | {_f2(r['total_fee'])} | "
+                     f"{_f1(r['score'])} | {r['risk_note'] or ''} |")
+    if result["components"]:
+        m = result["component_meta"]
+        lines += ["", "## 成分与估值", "",
+                  f"- 成分日期：{m.get('trade_date') or '-'}；成分数："
+                  f"{m.get('count') if m.get('count') is not None else '-'}；"
+                  f"前十集中度：{_f2(m.get('top10_weight_pct'))}%",
+                  f"- 前十大成分：" + "、".join(
+                      f"{c['name']} {_f2(c['weight_pct'])}%" for c in result["components"]),
+                  f"- 指数估值：PE-TTM {_f2(v.get('pe_ttm'))}"
+                  f"（5年分位 {_f1(v.get('pe_percentile_5y'))}%）；"
+                  f"PB {_f2(v.get('pb'))}（5年分位 {_f1(v.get('pb_percentile_5y'))}%）；"
+                  f"{v.get('valuation_level') or '-'}；{v.get('quadrant') or '-'}"]
+    if result["small_scale"]:
+        lines += ["", f"## 规模<{_ETF_SMALL_SCALE_YI:g}亿（清盘风险）", ""]
+        lines += [f"- {x['name']}（{x['code']}）：{_f1(x['scale_yi'])} 亿"
+                  for x in result["small_scale"]]
+    (out_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 # ── 6. 入口 ───────────────────────────────────────────────
 
 def run(scene: str, theme: str, top: int = 8, order: str = "r3y", limit: int = 200,
-        dy_mode: str = "auto", enrich: bool = False, out: str = "", as_json: bool = False) -> int:
+        dy_mode: str = "auto", enrich: bool = False, out: str = "", as_json: bool = False,
+        period: str = "1y", components: int = 10) -> int:
     t0 = datetime.now()
+    if scene == "etf-rank":
+        return _run_etf(theme, top=top, period=period, limit=limit,
+                        components=components, out=out, as_json=as_json)
     if scene != "fund-rank":
-        print(f"research 错误: 未知场景 {scene}（当前支持 fund-rank）", file=sys.stderr)
+        print(f"research 错误: 未知场景 {scene}（支持 fund-rank / etf-rank）", file=sys.stderr)
         return 1
     if order not in _ORDER_KEYS:
         print(f"research 错误: --order 仅支持 {'/'.join(_ORDER_KEYS)}", file=sys.stderr)

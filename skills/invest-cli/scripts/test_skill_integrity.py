@@ -11,9 +11,19 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
-SKILLS = Path.home() / ".agents" / "skills"
+import pytest
+
+# 本仓 skills 根从测试文件自身位置推导（invest-cli/scripts/ → skills），
+# 不写死 `~/.agents/skills`：写死后换机器、换安装位置即假失败，而本机恰好
+# 因 ~/.agents/skills 是指向真源的符号链接才通过——那是环境巧合，不是判据。
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+SKILLS = _SCRIPTS.parent.parent  # invest-cli/scripts → skills
 FUND_DIR = SKILLS / "invest-fund"
 SKILL_MD = FUND_DIR / "SKILL.md"
 REFS = FUND_DIR / "references"
@@ -98,8 +108,18 @@ _ARCHIVE_CTX = ("归档", "已并入", "合并", "原文", "已删除", "退役"
 
 
 def _installed_skill_names() -> set[str]:
+    """已安装技能名 = 本仓 skills 树 + 各外部技能根。
+
+    外部根不再写死 `~/.agents` / `~/.claude`，而是复用运行时唯一真源
+    `sources/registry.py::skill_roots()`（env INVEST_SKILL_ROOTS + 常见根 +
+    Documents 项目内发现）。测试与运行时读同一份根列表，避免「装在某些
+    位置的源，运行时认得、测试不认」的漂移。
+    """
+    from sources import registry
+
     names: set[str] = set()
-    for root in (Path.home() / ".agents" / "skills", Path.home() / ".claude" / "skills"):
+    roots = [SKILLS] + list(registry.skill_roots())
+    for root in roots:
         if root.is_dir():
             names.update(p.name for p in root.iterdir() if p.is_dir())
     return names
@@ -275,15 +295,29 @@ def test_reference_path_guard_catches_bare_filename() -> None:
 # 路由页）**恰恰是用来指路到本仓技能的**，它落在另一个根目录下，路径守卫管不到。
 # 这类引用一旦悬空，用户会被指到一个不存在的技能（第四轮修过 invest-industry 那一次，
 # 就是同一类；本轮新增路由页时我自己又写错了一次 invest-us）。
-_WORKBUDDY_ROUTING = Path.home() / ".workbuddy" / "skills" / "tencent-invest" / "SKILL.md"
+# workbuddy 路由页：从 registry 的外部根里找（不写死 ~/.workbuddy）。
+# 找不到就 skip——它是「本机有该页时才校验」的可选守卫，不是必过项。
+def _workbuddy_routing_pages() -> list[Path]:
+    from sources import registry
+
+    out: list[Path] = []
+    for root in registry.skill_roots():
+        cand = root / "tencent-invest" / "SKILL.md"
+        if cand.is_file():
+            out.append(cand)
+    return out
+
+
+_WORKBUDDY_ROUTING_PAGES = _workbuddy_routing_pages()
 # 「已并入/已归档」这类说明句里出现的历史技能名不算悬空引用 —— 它们是在解释去向
 _HISTORICAL = ("已并入", "归档", "archive", "已合并", "已删除")
 
 
-def test_workbuddy_routing_page_only_points_to_live_skills():
-    if not _WORKBUDDY_ROUTING.is_file():
+@pytest.mark.parametrize("page", _WORKBUDDY_ROUTING_PAGES, ids=lambda p: str(p.parent.parent))
+def test_workbuddy_routing_page_only_points_to_live_skills(page: Path):
+    if not _WORKBUDDY_ROUTING_PAGES:
         pytest.skip("本机没有 workbuddy 路由页（非目标环境）")
-    text = _WORKBUDDY_ROUTING.read_text(encoding="utf-8")
+    text = page.read_text(encoding="utf-8")
     missing: list[str] = []
     for line in text.splitlines():
         if any(mark in line for mark in _HISTORICAL):

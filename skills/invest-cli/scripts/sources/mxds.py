@@ -8,12 +8,10 @@ key 读取：环境变量 EM_API_KEY（进程 / launchctl / shell rc）或凭据
 """
 from __future__ import annotations
 
-import http.client
 import json
 import re
-import ssl
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 ENV_KEY = "EM_API_KEY"
 MCP_HOST = "mxapi.eastmoney.com"
@@ -35,6 +33,27 @@ _NON_TICKER_TOKENS = {
 # 裸 ticker（AAPL/TSLA/BRK.A）：服务端 NLU 不识别（实测 "AAPL" 返回空数组），
 # us() 对这种形态包装成查询模板再发。
 _TICKER_RE = re.compile(r"^[A-Za-z]{1,5}(?:[.\-][A-Za-z]{1,4})?$")
+
+# 快照类工具：route 快照链（stock/fund/us 三个 kind）消费的是「单一标的
+# 信封」——`unwrap_snapshot` 之后 `cmd_*.format_terminal` 直接对
+# `data["data"]` 做 `.get`，要求它是 dict。
+#
+# 妙想这些工具的服务端实现是**自然语言检索**，实测对所有输入都返回表格信封
+# （`data` = `[{columns, items}, ...]`）：真实标的（600519→贵州茅台表格）、
+# 不存在代码（999999→「全部A股(板块)」全市场汇总）、错别字名称
+# （贵洲茅台→静默纠错成贵州茅台）无一例外——**永远**产不出 dict 快照。
+# 因此快照类调用（stock/fund/us，_call_tool 显式 snapshot=True）拿到非 dict
+# 快照时按「未找到」拒绝，让链路回退到下一源或给出明确错误。
+#
+# 注意本名单只是**缺省判据**：intent mxds 自然语言入口（auto()）的契约是
+# 「表格即答案」，显式传 snapshot=False 放行（2026-10-14 审查实测：把拒绝
+# 设为 _call_tool 的默认行为会误杀 auto() 的 4 条路由）。
+_SNAPSHOT_TOOLS = frozenset({
+    "mx_ashare_finance_data",
+    "mx_hk_finance_data",
+    "mx_us_finance_data",
+    "mx_fund_finance_data",
+})
 
 
 def _ticker_like(q: str) -> bool:
@@ -89,7 +108,12 @@ def _extract_payload(body: str, content_type: str) -> str:
 
 
 def _mcp_call(tool: str, query: str, timeout: int = 30) -> dict[str, Any]:
-    """调用 MCP 工具，返回解析后的响应。"""
+    """调用 MCP 工具，返回解析后的响应。
+
+    2026-11-09 P0 收口：从裸 http.client.HTTPSConnection 改走共享安全闸
+    sources/_http.guarded_request（https + host 白名单 + DNS 公网校验 + 禁重定向）。
+    此前本路径完全不过闸，DNS rebinding 与重定向绕过对妙想调用完全失效。
+    """
     api_key = load_api_key()
     if not api_key:
         return {"ok": False, "error": f"未设置 {ENV_KEY}"}
@@ -101,30 +125,31 @@ def _mcp_call(tool: str, query: str, timeout: int = 30) -> dict[str, Any]:
     })
 
     try:
-        ctx = ssl.create_default_context()
-        conn = http.client.HTTPSConnection(MCP_HOST, timeout=timeout, context=ctx)
-        conn.request(
-            "POST", MCP_PATH,
-            body=payload,
+        from ._http import guarded_request
+
+        status, body_bytes, headers = guarded_request(
+            f"https://{MCP_HOST}{MCP_PATH}",
             headers={
                 "Content-Type": "application/json",
                 "em_api_key": api_key,
                 "Accept": "application/json, text/event-stream",
             },
+            data=payload.encode("utf-8"),
+            timeout=timeout,
+            allowed_host=MCP_HOST,
         )
-        resp = conn.getresponse()
-        body = resp.read().decode("utf-8")
-        conn.close()
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
-    if resp.status != 200:
+    body = body_bytes.decode("utf-8", errors="replace")
+    content_type = headers.get("Content-Type") or headers.get("content-type") or ""
+    if status != 200:
         # key 失效/限流的具体原因在 body 里，带前 200 字符，否则排障只见 "HTTP 4xx"
         snippet = body[:200].replace("\n", " ")
-        return {"ok": False, "error": f"HTTP {resp.status}: {resp.reason}: {snippet}"}
+        return {"ok": False, "error": f"HTTP {status}: {snippet}"}
 
     try:
-        body = _extract_payload(body, resp.getheader("Content-Type") or "")
+        body = _extract_payload(body, content_type)
     except ValueError as e:
         return {"ok": False, "error": str(e)}
 
@@ -161,10 +186,66 @@ def _mcp_call(tool: str, query: str, timeout: int = 30) -> dict[str, Any]:
     return {"ok": True, "data": parsed, "raw_text": text}
 
 
-def _call_tool(tool: str, keyword: str) -> dict[str, Any]:
-    """统一调用工具并包装为 invest-cli 信封格式。"""
+def _is_search_envelope(parsed: Any) -> bool:
+    """妙想 NLU「检索结果信封」判据——只用于错误文案区分，**不做放行判据**。
+
+    表格信封两种形态都算：data 是表格列表（实测主形态），或 data 本身是带
+    columns/items 的 dict（防御性，实测未出现）。放行判据是 _call_tool 里的
+    正向契约（快照内层 data 必须是 dict），本函数回答的只是「服务端给了检索
+    结果还是形态异常」——两者排障方向不同，文案要分开。
+    """
+    if not isinstance(parsed, dict):
+        return False
+    data = parsed.get("data")
+    if isinstance(data, list) and data:
+        first = data[0]
+        return isinstance(first, dict) and ("columns" in first or "items" in first)
+    return isinstance(data, dict) and ("columns" in data or "items" in data)
+
+
+def _snapshot_shape_error(parsed: Any, keyword: str) -> str:
+    """快照类调用拿到非 dict 快照时的错误文案（见 _call_tool 的契约校验）。"""
+    if _is_search_envelope(parsed):
+        return f"未找到匹配标的: {keyword!r}（妙想仅返回检索结果，无唯一匹配）"
+    return f"未找到匹配标的: {keyword!r}（妙想返回的不是单一标的快照）"
+
+
+def _call_tool(tool: str, keyword: str, *, snapshot: Optional[bool] = None) -> dict[str, Any]:
+    """统一调用工具并包装为 invest-cli 信封格式。
+
+    snapshot 控制「内层 data 必须是 dict」这一契约校验。两个消费者的需求
+    截然不同，必须显式区分（2026-10-14 审查实测：藏在工具名单的默认行为里，
+    intent mxds 的 4 条路由会被误杀）：
+      · route 快照链（stock/fund/us）：unwrap_snapshot 之后
+        `cmd_*.format_terminal` 直接对 data["data"] 做 .get，必须是 dict
+        → snapshot=True；
+      · intent mxds 自然语言入口（auto()）：契约就是「表格即答案」，
+        SKILL.md 明文推荐 `intent mxds "AAPL 股价"` → snapshot=False；
+      · 检索类工具（screen/news/notice/bond/index/macro/comprehensive）不在
+        _SNAPSHOT_TOOLS，缺省 None 即放行表格。
+    缺省 None 按工具名单判定，显式传值优先。
+
+    正向判据（而不是「拒表格」的否定式）：实测妙想快照类工具对所有输入都只
+    返回表格信封，但下游真正的不变量是「快照的 data 必须是 dict」。list-of-
+    entity-dicts、顶层 JSON 数组、表格包 dict 三类形态同样会让 format_terminal
+    崩溃或输出空表（审查实测复现），只拒带 columns 的表格漏掉它们，故按
+    「不是 dict 或 dict 但内容是表格」拒绝。
+    """
     result = _mcp_call(tool, keyword)
     if result.get("ok"):
+        require_dict = (tool in _SNAPSHOT_TOOLS) if snapshot is None else snapshot
+        if require_dict:
+            payload = result["data"]
+            inner = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(inner, dict) or ("columns" in inner or "items" in inner):
+                return {
+                    "source": "mxds",
+                    "kind": tool,
+                    "ok": False,
+                    "data": None,
+                    "error": _snapshot_shape_error(payload, keyword),
+                    "raw": payload,
+                }
         return {
             "source": "mxds",
             "kind": tool,
@@ -189,21 +270,21 @@ def stock(keyword: str) -> dict[str, Any]:
     code = str(keyword).strip()
     # 港股代码：5位数字或以 hk 开头
     if code.startswith("hk") or (len(code) == 5 and code.isdigit()):
-        return _call_tool("mx_hk_finance_data", keyword)
-    return _call_tool("mx_ashare_finance_data", keyword)
+        return _call_tool("mx_hk_finance_data", keyword, snapshot=True)
+    return _call_tool("mx_ashare_finance_data", keyword, snapshot=True)
 
 
 def fund(keyword: str) -> dict[str, Any]:
     """基金快照。"""
-    return _call_tool("mx_fund_finance_data", keyword)
+    return _call_tool("mx_fund_finance_data", keyword, snapshot=True)
 
 
 def us(keyword: str) -> dict[str, Any]:
     """美股快照。裸 ticker 服务端不识别，包装成查询模板（见 _TICKER_RE）。"""
     q = str(keyword).strip()
     if _TICKER_RE.match(q):
-        return _call_tool("mx_us_finance_data", f"{q.upper()} 股价")
-    return _call_tool("mx_us_finance_data", q)
+        return _call_tool("mx_us_finance_data", f"{q.upper()} 股价", snapshot=True)
+    return _call_tool("mx_us_finance_data", q, snapshot=True)
 
 
 def screen(condition: str) -> dict[str, Any]:
@@ -301,12 +382,12 @@ def auto(query: str) -> dict[str, Any]:
     try:
         from _common import cache_get, cache_set
     except ImportError:  # _common 不可用时缓存静默禁用（与 tencent.py 同模式）
-        return _call_tool(tool, q)
+        return _call_tool(tool, q, snapshot=False)
 
     hit = cache_get(_NL_CACHE_NS, cache_key, _NL_CACHE_TTL)
     if hit is not None:
         return {**hit, "cached": True}
-    res = _call_tool(tool, q)
+    res = _call_tool(tool, q, snapshot=False)
     if res.get("ok"):
         cache_set(_NL_CACHE_NS, cache_key, res)
     return res

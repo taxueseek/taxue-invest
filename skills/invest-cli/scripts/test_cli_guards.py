@@ -121,19 +121,18 @@ def test_screen_full_page_has_no_remaining_line(monkeypatch, capsys) -> None:
 # ── 4. 选股回包非 JSON 时要报错，不能抛出裸异常
 
 def test_screen_non_json_body_is_reported(monkeypatch) -> None:
+    """上游回包非 JSON 时必须报错，不能抛裸异常。
+
+    2026-11-09 P0 收口：screen 从 requests.post 改走 sources/_http.guarded_request，
+    打桩点随之从 requests.post 移到 guarded_request（返回 (状态码, 响应体, 头)）。
+    """
     import sources.eastmoney as em
 
-    class _Resp:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            raise ValueError("Expecting value: line 1 column 1 (char 0)")
-
     monkeypatch.setattr(em, "load_api_key", lambda: "k")
-    import requests
-
-    monkeypatch.setattr(requests, "post", lambda *a, **kw: _Resp())
+    monkeypatch.setattr(
+        "sources._http.guarded_request",
+        lambda *a, **kw: (200, b"<html>not json</html>", {}),
+    )
 
     res = em.screen("x")
     assert res["ok"] is False
@@ -185,8 +184,9 @@ def test_yfinance_logger_does_not_pollute_stderr() -> None:
     """
     import logging
 
-    import cmd_us  # noqa: F401  导入即装上过滤器
+    from cmd_us import _suppress_yfinance_logging
 
+    _suppress_yfinance_logging()
     assert logging.getLogger("yfinance").level >= logging.CRITICAL
 
 
@@ -432,9 +432,10 @@ def test_screen_mxds_json_envelope_passthrough(monkeypatch, capsys) -> None:
 
 def test_sec_rejects_non_positive_filings(monkeypatch, capsys) -> None:
     import cmd_sec
+    from sources import sec_edgar
 
     called = {"n": 0}
-    monkeypatch.setattr(cmd_sec.sec_edgar, "snapshot",
+    monkeypatch.setattr(sec_edgar, "snapshot",
                         lambda *a, **kw: called.__setitem__("n", called["n"] + 1) or {})
     for bad in (0, -1, -99):
         assert cmd_sec.run("AAPL", limit=bad) == 1, f"--filings {bad} 被接受了"
@@ -445,6 +446,7 @@ def test_sec_rejects_non_positive_filings(monkeypatch, capsys) -> None:
 def test_sec_accepts_positive_filings(monkeypatch) -> None:
     """反向用例：正常参数不能被这条守卫误拦（并透传新增的序列参数）。"""
     import cmd_sec
+    from sources import sec_edgar
 
     seen = {}
 
@@ -454,7 +456,7 @@ def test_sec_accepts_positive_filings(monkeypatch) -> None:
         seen["quarterly"] = quarterly
         return {"ok": True, "data": {"ticker": ticker, "metrics": {}, "filings": []}}
 
-    monkeypatch.setattr(cmd_sec.sec_edgar, "snapshot", _fake_snapshot)
+    monkeypatch.setattr(sec_edgar, "snapshot", _fake_snapshot)
     assert cmd_sec.run("AAPL", limit=3, as_json=True) == 0
     assert seen["limit"] == 3
     assert cmd_sec.run("AAPL", limit=3, as_json=True, years=8, quarterly=True) == 0
@@ -572,7 +574,7 @@ def test_kline_routes_unknown_periods_to_cli():
     import cmd_kline
 
     with mock.patch.object(cmd_kline, "_via_cli") as via, \
-         mock.patch.object(cmd_kline.tencent, "kline") as native:
+         mock.patch.object(tencent, "kline") as native:
         via.return_value = 0
         cmd_kline.run("600519", period="season", limit=3)
         via.assert_called_once()
@@ -590,3 +592,25 @@ def test_kline_routes_unknown_periods_to_cli():
         cmd_kline.run("600519", period="day", limit=1)
         native.assert_called_once()
         via.assert_not_called()
+
+
+# ── report 产物目录：用户数据归 state_root，不落 CWD
+#    （2026-10-25 前是 Path.cwd()/"fund_reports"，在仓库目录跑一次 --latest
+#     就把 1.7M PDF 堆进 skill 目录当未跟踪文件）
+
+def test_report_default_out_is_state_not_cwd() -> None:
+    import cmd_report
+    from _common import state_root
+
+    dest = cmd_report._default_out("005827")
+    assert dest == state_root() / "reports" / "005827"
+    assert not dest.is_relative_to(Path.cwd())
+
+
+def test_report_default_out_independent_of_cwd(monkeypatch, tmp_path) -> None:
+    import cmd_report
+    from _common import state_root
+
+    monkeypatch.chdir(tmp_path)
+    assert cmd_report._default_out("005827") == state_root() / "reports" / "005827"
+    assert cmd_report._default_out("005827") != tmp_path / "fund_reports" / "005827"

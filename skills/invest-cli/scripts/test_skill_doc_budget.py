@@ -28,8 +28,8 @@ if str(_SCRIPTS) not in sys.path:
 # 只门禁**常驻层的两份入口 SKILL.md**。子技能的 references/ 是按需加载的，
 # 体积大不构成每轮成本，不在本门禁范围。
 BUDGETS = {
-    "invest/SKILL.md": 5100,        # 2026-10-19 鼏身实测 4622 字符
-    "invest-cli/SKILL.md": 16200,   # 2026-10-19 鼏身实测 14753 字符
+    "invest/SKILL.md": 5100,        # 2026-10-19 瘦身实测 4622 字符
+    "invest-cli/SKILL.md": 16200,   # 2026-10-19 瘦身实测 14753 字符
 }
 
 

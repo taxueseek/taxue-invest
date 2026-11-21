@@ -28,6 +28,7 @@ triggers:
 | `credit_spread.md` | 信用利差分析报告 | 利差分析 |
 | `earnings_review.md` | 业绩点评报告 | 财报/业绩解读 |
 | `ic_report.md` | 首次覆盖报告 | 首次覆盖/深度研究 |
+| `ic_memo.md` | IC 投资备忘录（论点/论证四层/对抗论证） | IC 研报/投委会讨论 |
 | `enterprise_15.md` | 企业深度分析（15 板块） | 企业分析 |
 | `industry_report.md` | 行业研究报告 | 行业分析 |
 

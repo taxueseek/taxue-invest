@@ -26,6 +26,7 @@ rebinding 防御。
 from __future__ import annotations
 
 import ipaddress
+import json
 import socket
 import urllib.error
 import urllib.parse
@@ -33,6 +34,9 @@ import urllib.request
 from typing import Any, Optional, Union
 
 USER_AGENT = "invest-cli/1.0 (shared http gate)"
+
+# POST 请求的默认超时（秒）。各源需要更长的自己在调用处显式传。
+DEFAULT_POST_TIMEOUT = 30.0
 
 # Clash/Mihomo TUN fake-ip 段（见模块 docstring）
 _FAKE_IP_NETS = tuple(
@@ -47,7 +51,18 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+# opener 延迟构建：模块级 build_opener 在 import 时触发 ssl 上下文初始化（~39ms），
+# 让所有 import _http 的模块（tencent/hithink/fmp/tiingo 等）都付这笔成本。
+# 改为首次调用 guarded_open 时构建，不触达网络路径的子命令（datasources/capabilities）
+# 零成本。
+_OPENER: Any = None
+
+
+def _get_opener():
+    global _OPENER
+    if _OPENER is None:
+        _OPENER = urllib.request.build_opener(_NoRedirect)
+    return _OPENER
 
 
 def assert_public_host(hostname: str) -> None:
@@ -89,7 +104,49 @@ def guarded_open(
         if parts.hostname not in hosts:
             raise ValueError(f"拒绝非 {hosts[0]} 等白名单域的请求")
     assert_public_host(parts.hostname or "")
-    return _OPENER.open(url, timeout=timeout)
+    return _get_opener().open(url, timeout=timeout)
+
+
+def guarded_request(
+    url: str,
+    method: str = "POST",
+    *,
+    headers: Optional[dict[str, str]] = None,
+    json_body: Any = None,
+    data: Optional[bytes] = None,
+    timeout: float = DEFAULT_POST_TIMEOUT,
+    allowed_host: Optional[Union[str, tuple[str, ...]]] = None,
+) -> tuple[int, bytes, dict[str, str]]:
+    """guarded_open 的 POST 形态：过同一套四层闸，返回 (状态码, 响应体, 响应头)。
+
+    为什么要有这个函数：eastmoney（requests.post）与 mxds（裸 http.client）此前
+    完全不过闸，DNS 公网校验与禁重定向对它们形同虚设。收口后「网络出口只有一处」
+    不再是约定，而是机制——新增适配器若绕过本函数，SSRF 四层闸就对其失效。
+
+    与 guarded_open 的分工：guarded_open 返回上下文管理器（调用方 `with` 后
+    自行 read），适合流式读取；本函数返回完整响应（适合 JSON API 的小响应体），
+    且对非 2xx 也**不抛异常**——把「HTTP 状态码」作为事实交回调用方分流
+    （与 fmp/tiingo 的 401/402/429 文案分流语义一致）。
+
+    校验失败抛 ValueError（与 guarded_open 同口径，调用方按请求失败处理）。
+    """
+    hdrs = dict(headers or {})
+    req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
+    if json_body is not None:
+        payload = json.dumps(json_body, ensure_ascii=False).encode("utf-8")
+        req.data = payload
+        req.add_header("Content-Type", "application/json")
+    try:
+        with guarded_open(req, timeout=timeout, allowed_host=allowed_host) as resp:
+            return resp.getcode(), resp.read(), dict(resp.headers.items())
+    except urllib.error.HTTPError as e:
+        # HTTPError 本身是响应：带状态码与 body，调用方按状态码分流（不抛）。
+        body = b""
+        try:
+            body = e.read()
+        except Exception:
+            pass
+        return e.code, body, dict(e.headers.items() if e.headers else {})
 
 
 def safe_xml_fromstring(text: str) -> Any:

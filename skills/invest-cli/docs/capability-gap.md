@@ -50,7 +50,7 @@
 | **历史净值** | NAV_INFO(fund_id, range) | 无命令可达 | **P0** | 加 ttskill 透传（本次） |
 | **实时行情** | STOCK_PRICE_QUERY(query=名称/代码) 等 | 无命令可达；A股实时已由同花顺 stock 覆盖 | P1 | 加 ttskill 透传；同花顺优先不换链 |
 | 估值地图 | VALUATION_MAP(group=全部) | 无命令可达 | P1 | 加 ttskill 透传 |
-| 条件选基/指数选基/主题选基 | CONDITION_SELECT / INDEX_FUND_SELECTION(top_n,period_codes,index_codes) / THEME_SELECT(theme_name) | 无命令可达 | P1 | 加 ttskill 透传（替代"找基金"需条件选基的场合） |
+| 条件选基/指数选基/主题选基 | CONDITION_SELECT / INDEX_FUND_SELECTION(top_n,period_codes,index_codes) / THEME_SELECT(theme_name) | 指数选基已收敛为 `research etf-rank`（2026-11-08）；条件/主题选基仍透传 | P1（条件/主题） | 透传可用，按消费频率再收敛 |
 | 机会扫描 | MARKET_OPPORTUNITY_SCANNER | 无命令可达 | P1 | 加 ttskill 透传 |
 | 宏观 | MACRO_DATA(region=cn/us, categories) | `intent macro`→argo；Wind 可选 | P1 | 透传可用，与 argo 双通道 |
 | 指数/行业行情 | INDEX_INFO / CHIP_INDEX_QUOTE / NONFERROUS_INDEX_QUOTE | 无命令可达 | P2 | 透传可用 |
@@ -104,5 +104,21 @@ intent 层透传），Agent 只能手工十轮编排（搜索候选 → 逐只�
 本次由 `invest-cli research fund-rank <主题>` 关闭：池构建（TTFUND_SEARCH 分页，
 名称子串搜索须先提炼关键词）→ 批量快照（复用 fund 同路径同缓存）→ 排名 →
 重仓×股息率交叉 → 双源互证。实测 97 只池 46s（手工串行 ~210s）。
-遗留缺口：指数/ETF 维度的横向对比未进管线（fund-rank 只做基金侧）；--enrich
-的资讯相关性受限于基金名非热词。
+遗留缺口：--enrich 的资讯相关性受限于基金名非热词。
+
+## 八、2026-11-08 更新：指数基金横评缺口已关闭
+
+原遗留的「指数/ETF 维度横向对比未进管线」由 `invest-cli research etf-rank <指数代码或名称>`
+关闭。数据走 ttskill `TTFUND_INDEX_FUND_SELECTION` 一次调用，取回候选指数、
+`fund_items` 横评（规模/管理费/托管费/跟踪误差/超额收益/得分/risk_note）、
+前 N 大成分股与指数估值。
+
+本次以真实回包接线（2026-11-08 实测沪深300：357 只跟踪基金，前五 510310 /
+510300 / 510330 / 159919 / 000051），字段路径 `selection_result.data` 与文档写的
+`raw_result.body` 两种形状都兼容；结构缺失、`fund_items` 为空、上游失败一律 rc=1，
+不返回空表。评分口径 `score_note`、风险提示 `risk_note` 原样透出，不在本地重算；
+规模<2 亿的基金单独汇总提示清盘风险。
+
+剩余：条件选基（CONDITION_SELECT）与主题选基（THEME_SELECT）仍只有透传，
+按「被分析链路反复消费才收敛」的纪律暂不封装。守护见
+`scripts/test_research_etf.py`。

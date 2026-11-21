@@ -15,8 +15,8 @@
 | **腾讯微证券 CLI**（可选） | 安装 westock 二进制 | `invest-cli westock` 长尾能力：筹码/龙虎榜/北向/两融/一致预期/ESG/机构评级/产业链/板块估值/转债条款等 40+ 子命令 | 跳过该源 |
 | **同花顺金融数据服务** | 环境变量 `HITHINK_FINANCE_API_KEY` | `invest-cli stock` / `fund` 的 A 股与公募主路 | 回退东财 |
 | **东方财富** | 环境变量 `EASTMONEY_APIKEY` | A股/港股快照、基金快照、自然语言选股（港股必经） | 该源跳过 |
-| **妙想（东方财富）**（可选） | 环境变量 `EM_API_KEY` 或凭据文件 | `invest-cli screen` 自然语言选股、`intent deep bond` 债券场景 | 回退东财 |
-| **Yahoo（yfinance）** | 安装 Python 包 `yfinance` | `invest-cli us` 美股快照 | 回退腾讯行情，再退 Bitget rToken 报价（仅行情） |
+| **妙想（东方财富）**（可选） | 环境变量 `EM_API_KEY` 或凭据文件 | `invest-cli screen` 自然语言选股（债券场景走 Wind，不经妙想） | 回退东财 |
+| **Yahoo（yfinance）** | 安装 Python 包 `yfinance` | `invest-cli us` 美股快照 | 回退腾讯行情 → Tiingo → Bitget rToken 报价（末位仅行情） |
 | **Financial Modeling Prep**（可选） | 环境变量 `FMP_API_KEY` 或 `~/.config/invest-cli/fmp.env` | `invest-cli fmp <代码>` 美股基本面/一致预期/评级/分红（免费档 250 次/天） | 跳过该源 |
 | **Tiingo**（可选） | 环境变量 `TIINGO_API_KEY` 或 `~/.config/invest-cli/tiingo.env` | `invest-cli us <代码> --history` 美股 EOD 历史 | 跳过该源 |
 | **SEC EDGAR** | 免费无 Key（可选 `SEC_EDGAR_USER_AGENT` 声明身份） | `invest-cli sec` 美股财报原文（10-K XBRL + 申报清单） | 始终可用 |
@@ -59,7 +59,7 @@ invest-cli kline 600519 --period day # K 线（年线按自然年聚合，未知
 ```
 
 - **定位**：只回答「现在多少钱、涨跌多少、这几只对比一下」。问基本面请用 `stock` / `fund` / `us`（含 ROE / 净利润等，冷取数 0.5s 起）。
-- **不进 `stock` / `fund` 主位**：腾讯只有行情、没有基本面（净利润 / ROE / EPS / 资产负债率一个都没有），进主位会把 A 股快照从 13 项基本面退化成纯行情。链序为 `us = yfinance > 腾讯 > bitget`、`stock = 同花顺 > 东财 > yfinance > 腾讯`，`fund` / `screen` 不含腾讯。
+- **不进 `stock` / `fund` 主位**：腾讯只有行情、没有基本面（净利润 / ROE / EPS / 资产负债率一个都没有），进主位会把 A 股快照从 13 项基本面退化成纯行情。链序为 `us = yfinance > 腾讯 > tiingo > bitget`、`stock = 同花顺 > 东财 > yfinance > 腾讯`，`fund` / `screen` 不含腾讯。
 - **号码重叠会明说**：`quote 000001` 会同时说明「也是沪市指数 sh000001」；`stock` 遇到基金代码会直接拒绝并指向 `fund`。
 - 安装腾讯微证券 CLI 后，`invest-cli westock <子命令>` 可透传 40+ 长尾能力（筹码 / 龙虎榜 / 陆股通 / 北向 / 两融 / 一致预期 / ESG / 机构评级 / 产业链 / 板块估值 / 可转债条款 / 停复牌 / 风险事件）；`invest-cli westock --help` 列出命令树。
 
@@ -184,6 +184,7 @@ python3 <argo>/scripts/search.py --list-engines --detail # 含 key / 熔断 / �
 | 基金定期报告 | `invest-cli report 110011 --latest 4` → invest-analyst 速读 |
 | 经理任职期复盘 | `invest-cli tenure --manager <姓名> --company <公司>` |
 | 主题基金排行 | `invest-cli research fund-rank <主题>` |
+| 指数基金横评 | `invest-cli research etf-rank 000300`（同指数 ETF/联接基金：规模、费率、跟踪误差、得分） |
 | 美股 | `invest-cli us AAPL` → invest-stock 四维评分 |
 | 美股财报原文核验 | `invest-cli sec AAPL` 与 Wind / yfinance 交叉验证 |
 | 市场温度 / 流动性 | `invest-cli intent macro` → invest-macro |

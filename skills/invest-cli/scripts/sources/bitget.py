@@ -154,13 +154,10 @@ def _envelope(
     data: Any = None,
     error: Optional[str] = None,
 ) -> dict[str, Any]:
-    return {
-        "source": "bitget",
-        "kind": "us",
-        "ok": ok,
-        "data": data,
-        "error": error,
-    }
+    """本源的出口。构造收口到 sources/envelope（P1，2026-11-09）。"""
+    from .envelope import envelope
+
+    return envelope("bitget", "us", ok, data=data, error=error)
 
 
 def us(

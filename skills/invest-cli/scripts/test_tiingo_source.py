@@ -6,11 +6,11 @@
 """
 from __future__ import annotations
 
-import json
 from typing import Any, Optional
 
 import pytest
 
+import sources._http as _shared_http
 import sources.tiingo as tiingo
 
 
@@ -252,15 +252,19 @@ def test_get_json_allows_clash_fake_ip_range(monkeypatch):
 
         monkeypatch.setattr(_socket, "getaddrinfo",
                             lambda *a, **k: [_FakeInfo()])
-        monkeypatch.setattr(tiingo, "_OPENER", _BoomOpener())
+        monkeypatch.setattr(_shared_http, "_OPENER", _BoomOpener())
         payload, err = tiingo._get_json(f"https://{tiingo.API_HOST}/iex/?tickers=AAPL")
         # fake-ip 被放行到连接层：错误是「请求失败」而不是「host 校验拒绝」
         assert "host 校验拒绝" not in (err or ""), fake_ip
 
 
 def test_no_redirect_handler_rejects_all_redirects():
-    """302 的目标不过白名单：跟随即绕闸，处理器必须一律拒绝。"""
-    handler = tiingo._NoRedirect()
+    """302 的目标不过白名单：跟随即绕闸，处理器必须一律拒绝。
+
+    第九轮并口后 _NoRedirect 的唯一真身在 sources/_http（tiingo/fmp 的内联
+    副本已删），行为契约钉在共享出口上。
+    """
+    handler = _shared_http._NoRedirect()
     assert handler.redirect_request(
         None, None, 302, "Found", {"Location": "http://169.254.169.254/"},
         "http://169.254.169.254/") is None
@@ -281,12 +285,14 @@ def test_registry_declaration():
 def test_us_chain_order_yfinance_tencent_tiingo_bitget():
     from sources.route import candidates
 
-    # mxds 已于 2026-10-11 移出 us 快照链（自然语言服务不适合确定性快照，见
-    # data-sources.yaml mxds coverage 注释）；本源要守的位次不变量是
-    # yfinance > tencent > tiingo > bitget 这一段。
+    # v3.8（金融口径收口）：us 默认链为 yfinance > fmp > tencent > tiingo；
+    # bitget（USDT 代币价）已移出默认股票快照链。
     chain = candidates("us")
-    assert chain == ["yfinance", "tencent", "tiingo", "bitget"], chain
-    assert chain.index("bitget") == chain.index("tiingo") + 1
+    if "yfinance" in chain:
+        assert chain[:4] == ["yfinance", "fmp", "tencent", "tiingo"], chain
+    else:
+        assert chain[:3] == ["fmp", "tencent", "tiingo"], chain
+    assert "bitget" not in chain, chain
 
 
 def test_detect_reflects_key_presence(monkeypatch):
@@ -300,6 +306,7 @@ def test_detect_reflects_key_presence(monkeypatch):
 
 # ---------- 真实通道（默认跳过；INVEST_LIVE=1 时跑） ----------
 
+@pytest.mark.live
 def test_live_us_and_history():
     if __import__("os").environ.get("INVEST_LIVE") != "1":
         pytest.skip("INVEST_LIVE!=1")

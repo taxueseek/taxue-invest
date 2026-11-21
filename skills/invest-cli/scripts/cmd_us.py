@@ -10,21 +10,29 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, NamedTuple, Optional
 
-# yfinance 用标准 logging（logger 名 "yfinance"，propagate=True、无自带 handler），
-# 所以它每遇到一次上游错误就把**原始 HTTP 响应体**经 root 的 lastResort handler
-# 打到 stderr。实测未知代码时 stderr 出现整段
-# `HTTP Error 404: {"quoteSummary":...}`，与 invest-cli 自己的错误行混在一起，
-# 而 stderr 是给人和 agent 读的错误通道——真实原因会被这段噪音淹没。
-# 错误本身由下方守卫转成一句可读中文，这里只负责掐掉库的裸输出。
-logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
+def _suppress_yfinance_logging() -> None:
+    """掐掉 yfinance 的原始 HTTP 响应体经 root logger 打到 stderr 的噪音。
+
+    yfinance 用标准 logging（logger 名 "yfinance"，propagate=True、无自带 handler），
+    所以它每遇到一次上游错误就把**原始 HTTP 响应体**经 root 的 lastResort handler
+    打到 stderr。实测未知代码时 stderr 出现整段
+    `HTTP Error 404: {"quoteSummary":...}`，与 invest-cli 自己的错误行混在一起，
+    而 stderr 是给人和 agent 读的错误通道——真实原因会被这段噪音淹没。
+    错误本身由下方守卫转成一句可读中文，这里只负责掐掉库的裸输出。
+
+    延迟到函数内：`import logging` 连带 `traceback` 实测约 8.6ms，
+    只在真正要用 yfinance 时才付。
+    """
+    import logging
+
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 # A 股代码 → yfinance 后缀。用**前缀族**判定，不逐个枚举号段。
 #
@@ -282,6 +290,10 @@ def _load_ticker(ticker_symbol: str) -> _Attempt:
     info 与 history 相互独立，串行会让两段网络等待相加；并发后不再叠加。
     异常不外抛：调用方要靠「info 异常」还是「info 空壳」来区分传输失败与标的不存在。
     """
+    from concurrent.futures import ThreadPoolExecutor
+
+    _suppress_yfinance_logging()
+
     import yfinance as yf
 
     ticker = yf.Ticker(ticker_symbol)
@@ -624,10 +636,13 @@ def _format_bitget(data: dict) -> str:
     return "\n".join(lines)
 
 
-def print_eod_history(symbol: str, years: float = 1.0, as_json: bool = False) -> int:
+def print_eod_history(symbol: str, years: float = 1.0, as_json: bool = False,
+                      brief: bool = False) -> int:
     """`us <代码> --history` 入口：Tiingo EOD 历史专项（唯一提供可靠复权历史的源）。
 
     返回进程退出码（0 成功 / 1 失败），错误走 stderr——与 main() 的错误纪律一致。
+    `--brief` 只保留摘要（区间/回撤/分红/拆股），逐日 bars 换成根数：
+    默认载荷约 60KB，超过 agent 工具的 24k 字符上限，会被截成坏 JSON。
     """
     from sources.tiingo import eod_history
 
@@ -636,7 +651,12 @@ def print_eod_history(symbol: str, years: float = 1.0, as_json: bool = False) ->
         print(f"错误: {res.get('error') or 'EOD 历史取数失败'}", file=sys.stderr)
         return 1
     if as_json:
-        print(json.dumps(res["data"], ensure_ascii=False, indent=2))
+        data = res["data"]
+        if brief:
+            data = {k: v for k, v in data.items() if k != "bars"}
+            data["bars_omitted"] = len(res["data"].get("bars") or [])
+            data["brief"] = True
+        print(json.dumps(data, ensure_ascii=False, indent=2))
         return 0
     print(_format_history(res["data"], years=years))
     return 0

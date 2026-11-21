@@ -26,9 +26,42 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-
-from ._http import guarded_open, safe_xml_fromstring
 from typing import Any, Optional
+
+from ._http import guarded_open
+from ._sec_forms import (
+    _BUY_CODES as _BUY_CODES,
+    _SELL_CODES as _SELL_CODES,
+    _TRANSACTION_LABELS as _TRANSACTION_LABELS,
+    _direction as _direction,
+    _is_info_table as _is_info_table,
+    _parse_13f_table as _parse_13f_table,
+    _parse_form4 as _parse_form4,
+    _strip_ns as _strip_ns,
+    _text as _text,
+    _to_number as _to_number,
+)
+from ._sec_xbrl import (
+    ANNUAL_MAX_DAYS as ANNUAL_MAX_DAYS,
+    ANNUAL_MIN_DAYS as ANNUAL_MIN_DAYS,
+    DEI_TAGS as DEI_TAGS,
+    DERIVED_METRICS as DERIVED_METRICS,
+    METRIC_LABELS as METRIC_LABELS,
+    METRIC_TAGS as METRIC_TAGS,
+    QUARTER_MAX_DAYS as QUARTER_MAX_DAYS,
+    QUARTER_MIN_DAYS as QUARTER_MIN_DAYS,
+    _annual_rows as _annual_rows,
+    _apply_derived as _apply_derived,
+    _apply_derived_series as _apply_derived_series,
+    _dei_metrics as _dei_metrics,
+    _quarterly_flow as _quarterly_flow,
+    _quarterly_instant as _quarterly_instant,
+    _span_days as _span_days,
+    _unit_of as _unit_of,
+    extract_annual as extract_annual,
+    extract_quarterly as extract_quarterly,
+    extract_series as extract_series,
+)
 
 SOURCE_LABEL = "SEC EDGAR 美股财报"
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -42,97 +75,8 @@ ENV_UA = "SEC_EDGAR_USER_AGENT"
 DEFAULT_UA = "invest-cli/0.1 personal-research (contact: user@example.com)"
 DEFAULT_TIMEOUT = 30
 RETRIES = 3
-ANNUAL_MIN_DAYS = 300
-ANNUAL_MAX_DAYS = 400
 # 形如 ticker 的输入（用于决定「按代码解析」还是「按名称检索」）
 _TICKER_SHAPE = re.compile(r"^[A-Za-z][A-Za-z.\-]{0,9}$")
-
-# 指标 → 候选 us-gaap 标签（按优先级回退；标签漂移时取第一个存在的）。
-# 2026-09-24 从 9 项扩到 24 项：三关/四维需要的负债、现金、资本开支、回购分红
-# 原先只能靠 yfinance/Wind 侧补，原文级口径缺位。空列表 = 派生指标（见 DERIVED_METRICS）。
-METRIC_TAGS: dict[str, list[str]] = {
-    # 利润表
-    "revenue": [
-        "RevenueFromContractWithCustomerExcludingAssessedTax",
-        "Revenues",
-        "RevenueFromContractWithCustomerIncludingAssessedTax",
-    ],
-    "gross_profit": ["GrossProfit"],
-    "operating_income": ["OperatingIncomeLoss"],
-    "net_income": ["NetIncomeLoss", "ProfitLoss"],
-    "eps_diluted": ["EarningsPerShareDiluted"],
-    "eps_basic": ["EarningsPerShareBasic"],
-    "research_and_development": ["ResearchAndDevelopmentExpense"],
-    "sga": ["SellingGeneralAndAdministrativeExpense"],
-    "income_tax": ["IncomeTaxExpenseBenefit"],
-    # 现金流
-    "operating_cash_flow": [
-        "NetCashProvidedByUsedInOperatingActivities",
-        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
-    ],
-    "capex": [
-        "PaymentsToAcquirePropertyPlantAndEquipment",
-        "PaymentsToAcquireProductiveAssets",
-    ],
-    "free_cash_flow": [],  # 派生：经营现金流 − 资本开支（同一期间）
-    "buybacks": ["PaymentsForRepurchaseOfCommonStock"],
-    "dividends_paid": ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"],
-    "dividends_per_share": [
-        "CommonStockDividendsPerShareDeclared",
-        "CommonStockDividendsPerShareCashPaid",
-    ],
-    # 资产负债表
-    "assets": ["Assets"],
-    "liabilities": ["Liabilities"],
-    "equity": [
-        "StockholdersEquity",
-        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
-    ],
-    "cash": ["CashAndCashEquivalentsAtCarryingValue"],
-    "long_term_debt": ["LongTermDebtNoncurrent", "LongTermDebt"],
-    "inventory": ["InventoryNet"],
-    "receivables": ["AccountsReceivableNetCurrent"],
-    # dei 命名空间（不是 us-gaap）：流通股数
-    "shares_outstanding": [],
-}
-
-# 派生指标：来源是同一期间的两个原始指标，不是 XBRL 标签。
-# 只在两个来源指标都存在且期间一致时产出，绝不单边估算。
-DERIVED_METRICS: dict[str, tuple[str, str, str]] = {
-    # 指标: (被减项, 减项, 标签说明)
-    "free_cash_flow": ("operating_cash_flow", "capex", "经营现金流 − 资本开支"),
-}
-
-METRIC_LABELS: dict[str, str] = {
-    "revenue": "营业收入",
-    "gross_profit": "毛利润",
-    "operating_income": "营业利润",
-    "net_income": "净利润",
-    "eps_diluted": "稀释每股收益",
-    "eps_basic": "基本每股收益",
-    "research_and_development": "研发费用",
-    "sga": "销售管理费用",
-    "income_tax": "所得税费用",
-    "operating_cash_flow": "经营现金流",
-    "capex": "资本开支",
-    "free_cash_flow": "自由现金流",
-    "buybacks": "股票回购",
-    "dividends_paid": "现金分红",
-    "dividends_per_share": "每股股利",
-    "assets": "总资产",
-    "liabilities": "总负债",
-    "equity": "股东权益",
-    "cash": "现金及等价物",
-    "long_term_debt": "长期债务",
-    "inventory": "存货",
-    "receivables": "应收账款",
-    "shares_outstanding": "流通股数",
-}
-
-# dei 命名空间的事实（companyfacts 的 facts.dei），与 us-gaap 分开维护
-DEI_TAGS: dict[str, list[str]] = {
-    "shares_outstanding": ["EntityCommonStockSharesOutstanding"],
-}
 
 
 def detect() -> tuple[bool, str]:
@@ -256,281 +200,11 @@ def _cik10(cik: Any) -> str:
     return f"{int(cik):010d}"
 
 
-def _annual_rows(unit_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """过滤 10-K / FY，时长型事实要求年跨度，按期间升序返回。"""
-    out: list[dict[str, Any]] = []
-    for r in unit_rows or []:
-        if r.get("form") != "10-K" or r.get("fp") != "FY":
-            continue
-        start, end = r.get("start"), r.get("end")
-        if start:
-            try:
-                days = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).days
-            except (TypeError, ValueError):
-                continue
-            if not (ANNUAL_MIN_DAYS <= days <= ANNUAL_MAX_DAYS):
-                continue
-        out.append(r)
-    out.sort(key=lambda r: (r.get("end", ""), r.get("start", "")))
-    return out
-
-
-def _unit_of(units: dict[str, Any]) -> str:
-    for preferred in ("USD", "USD/shares"):
-        if preferred in units:
-            return preferred
-    return next(iter(units), "")
-
-
-def extract_annual(facts: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """从 companyfacts 抽取年报关键指标（最新一期）。纯函数，供离线测试。"""
-    gaap = ((facts.get("facts") or {}).get("us-gaap")) or {}
-    out: dict[str, dict[str, Any]] = {}
-    for metric, tags in METRIC_TAGS.items():
-        if not tags:  # 派生/独立命名空间指标，单独处理
-            continue
-        for tag in tags:
-            node = gaap.get(tag)
-            if not isinstance(node, dict):
-                continue
-            units = node.get("units") or {}
-            unit = _unit_of(units)
-            rows = _annual_rows(units.get(unit) or [])
-            if not rows:
-                continue
-            last = rows[-1]
-            out[metric] = {
-                "value": last.get("val"),
-                "unit": unit,
-                "tag": tag,
-                "fy": last.get("fy"),
-                "start": last.get("start"),
-                "end": last.get("end"),
-                "form": last.get("form"),
-            }
-            break
-    out.update(_dei_metrics(facts))
-    _apply_derived(out)
-    return out
-
-
-def _dei_metrics(facts: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """dei 命名空间指标（流通股数等）：取最近一个期末值。"""
-    dei = ((facts.get("facts") or {}).get("dei")) or {}
-    out: dict[str, dict[str, Any]] = {}
-    for metric, tags in DEI_TAGS.items():
-        for tag in tags:
-            node = dei.get(tag)
-            if not isinstance(node, dict):
-                continue
-            units = node.get("units") or {}
-            unit = next(iter(units), "")
-            rows = [r for r in (units.get(unit) or []) if r.get("val") is not None]
-            if not rows:
-                continue
-            rows.sort(key=lambda r: r.get("end", ""))
-            last = rows[-1]
-            out[metric] = {
-                "value": last.get("val"),
-                "unit": unit,
-                "tag": f"dei:{tag}",
-                "fy": last.get("fy"),
-                "start": last.get("start"),
-                "end": last.get("end"),
-                "form": last.get("form"),
-            }
-            break
-    return out
-
-
-def _apply_derived(out: dict[str, dict[str, Any]]) -> None:
-    """就地计算派生指标：只在两个来源指标存在且期间一致时产出。"""
-    for metric, (a, b, _note) in DERIVED_METRICS.items():
-        ra, rb = out.get(a), out.get(b)
-        if not ra or not rb:
-            continue
-        va, vb = ra.get("value"), rb.get("value")
-        if not isinstance(va, (int, float)) or not isinstance(vb, (int, float)):
-            continue
-        # 期间必须一致：不同财年/不同季度的两个数字相减是错的
-        if (ra.get("start"), ra.get("end")) != (rb.get("start"), rb.get("end")):
-            continue
-        out[metric] = {
-            "value": va - vb,
-            "unit": ra.get("unit"),
-            "tag": f"derived:{a}-{b}",
-            "fy": ra.get("fy"),
-            "start": ra.get("start"),
-            "end": ra.get("end"),
-            "form": ra.get("form"),
-            "derived": True,
-        }
-
-
-def extract_series(facts: dict[str, Any], years: int = 5) -> dict[str, list[dict[str, Any]]]:
-    """近 N 年年度序列（每年一行，升序）。纯函数，供离线测试。
-
-    与 extract_annual 的差别是「留全历史」：三关审查要的是 5 年趋势表，
-    只给最新一期等于把趋势留给调用方自己拼，而调用方（agent）拿不到
-    companyfacts 原始行，拼不出来。
-
-    同一财年多条（10-K 修正/重述）保留最后一条；标签漂移与 extract_annual 同规则。
-    """
-    gaap = ((facts.get("facts") or {}).get("us-gaap")) or {}
-    out: dict[str, list[dict[str, Any]]] = {}
-    for metric, tags in METRIC_TAGS.items():
-        if not tags:
-            continue
-        for tag in tags:
-            node = gaap.get(tag)
-            if not isinstance(node, dict):
-                continue
-            units = node.get("units") or {}
-            unit = _unit_of(units)
-            rows = _annual_rows(units.get(unit) or [])
-            if not rows:
-                continue
-            by_fy: dict[Any, dict[str, Any]] = {}
-            for r in rows:
-                key = r.get("fy") or r.get("end")
-                by_fy[key] = r  # rows 已按 end 升序，同 fy 后者覆盖（修正优先）
-            series = [
-                {"fy": r.get("fy"), "end": r.get("end"), "value": r.get("val"),
-                 "form": r.get("form"), "tag": tag, "unit": unit}
-                for r in sorted(by_fy.values(), key=lambda x: (x.get("end", ""), x.get("start", "")))
-            ]
-            out[metric] = series[-max(1, years):]
-            break
-    _apply_derived_series(out)
-    return out
-
-
-def _apply_derived_series(out: dict[str, list[dict[str, Any]]]) -> None:
-    """派生指标的年度序列：按 (start, end) 对齐两个来源序列后逐期相减。"""
-    for metric, (a, b, _note) in DERIVED_METRICS.items():
-        sa, sb = out.get(a) or [], out.get(b) or []
-        if not sa or not sb:
-            continue
-        idx_b = {(r.get("start"), r.get("end")): r for r in sb}
-        series: list[dict[str, Any]] = []
-        for ra in sa:
-            rb = idx_b.get((ra.get("start"), ra.get("end")))
-            if not rb or not isinstance(ra.get("value"), (int, float)) or not isinstance(rb.get("value"), (int, float)):
-                continue
-            series.append({
-                "fy": ra.get("fy"), "end": ra.get("end"),
-                "value": ra["value"] - rb["value"],
-                "form": ra.get("form"), "tag": f"derived:{a}-{b}",
-                "unit": ra.get("unit"), "derived": True,
-            })
-        if series:
-            out[metric] = series
-
-
-QUARTER_MIN_DAYS = 60
-QUARTER_MAX_DAYS = 110
-
-
-def extract_quarterly(facts: dict[str, Any], quarters: int = 8) -> dict[str, list[dict[str, Any]]]:
-    """近 N 个季度序列（升序）。纯函数，供离线测试。
-
-    - 流量型（利润表/现金流）：10-Q 的 Q1-Q3 直接取（跨度 60~110 天）；
-      Q4 由「FY − (Q1+Q2+Q3)」推导并标注 derived —— 美股 Q4 不单独申报，
-      不推导就永远缺一个季度。
-    - 时点型（资产/权益）：10-Q/10-K 的期末值按 end 去重。
-
-    EPS 的 Q4 推导是近似（股数变动），与其它 derived 行一样标注出来。
-    """
-    gaap = ((facts.get("facts") or {}).get("us-gaap")) or {}
-    out: dict[str, list[dict[str, Any]]] = {}
-    for metric, tags in METRIC_TAGS.items():
-        if not tags:
-            continue
-        for tag in tags:
-            node = gaap.get(tag)
-            if not isinstance(node, dict):
-                continue
-            units = node.get("units") or {}
-            unit = _unit_of(units)
-            rows = units.get(unit) or []
-            if not rows:
-                continue
-            flow_rows = [r for r in rows if r.get("start")]
-            if flow_rows:
-                series = _quarterly_flow(flow_rows)
-            else:
-                series = _quarterly_instant(rows)
-            if not series:
-                continue
-            out[metric] = series[-max(1, quarters):]
-            break
-    return out
-
-
-def _span_days(r: dict[str, Any]) -> Optional[int]:
-    start, end = r.get("start"), r.get("end")
-    if not start or not end:
-        return None
-    try:
-        return (datetime.fromisoformat(end) - datetime.fromisoformat(start)).days
-    except (TypeError, ValueError):
-        return None
-
-
-def _quarterly_flow(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """流量型季度序列：10-Q 的 Q1-Q3 + 推导 Q4。"""
-    q: dict[tuple[Any, str], dict[str, Any]] = {}
-    fy_rows: dict[Any, dict[str, Any]] = {}
-    for r in rows:
-        form = r.get("form")
-        fp = r.get("fp")
-        days = _span_days(r)
-        if form == "10-Q" and fp in ("Q1", "Q2", "Q3") and days is not None \
-                and QUARTER_MIN_DAYS <= days <= QUARTER_MAX_DAYS:
-            key = (r.get("fy") or r.get("end"), fp)
-            q[key] = r  # 同键保留最后一条（修正申报优先）
-        elif form == "10-K" and fp == "FY" and days is not None \
-                and ANNUAL_MIN_DAYS <= days <= ANNUAL_MAX_DAYS:
-            fy_rows[r.get("fy") or r.get("end")] = r
-    series = [
-        {"fy": r.get("fy"), "fp": r.get("fp"), "end": r.get("end"), "value": r.get("val"),
-         "form": r.get("form"), "derived": False}
-        for (_, fp), r in q.items()
-    ]
-    for fy, fyr in fy_rows.items():
-        parts = [q.get((fy, fp)) for fp in ("Q1", "Q2", "Q3")]
-        if any(p is None for p in parts) or fyr.get("val") is None:
-            continue
-        if any(p.get("val") is None for p in parts):
-            continue
-        series.append({
-            "fy": fy, "fp": "Q4", "end": fyr.get("end"),
-            "value": fyr["val"] - sum(p["val"] for p in parts),
-            "form": fyr.get("form"), "derived": True,
-        })
-    series.sort(key=lambda r: (r.get("end") or "", r.get("fp") or ""))
-    return series
-
-
-def _quarterly_instant(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """时点型季度序列：10-Q/10-K 的期末值，按 end 去重（后者覆盖）。"""
-    by_end: dict[str, dict[str, Any]] = {}
-    for r in rows:
-        if r.get("form") not in ("10-Q", "10-K") or r.get("val") is None:
-            continue
-        end = r.get("end")
-        if not end:
-            continue
-        by_end[end] = r
-    return [
-        {"fy": r.get("fy"), "fp": r.get("fp"), "end": r.get("end"), "value": r.get("val"),
-         "form": r.get("form"), "derived": False}
-        for r in sorted(by_end.values(), key=lambda x: x.get("end", ""))
-    ]
-
-
 def _err(message: str, kind: str = "us_fundamentals") -> dict[str, Any]:
-    return {"source": "sec_edgar", "kind": kind, "ok": False, "data": None, "error": message}
+    """本源的失败出口。构造收口到 sources/envelope（P1，2026-11-09）。"""
+    from .envelope import fail_envelope
+
+    return fail_envelope("sec_edgar", kind, message)
 
 
 def fundamentals(ticker: str) -> dict[str, Any]:
@@ -806,98 +480,6 @@ def filing_search(
 
 # ── Form 4：内部人交易（3/4/5 体系里的 4 号表）────────────────────────────
 INSIDER_FORMS = ("4", "4/A")
-_TRANSACTION_LABELS: dict[str, str] = {
-    "P": "公开市场买入", "S": "公开市场卖出", "A": "授予（薪酬/激励）",
-    "M": "期权行权", "F": "代扣税款（股票交割）", "G": "赠与",
-    "C": "衍生品转换", "D": "处置", "E": "到期", "I": "自主计划交易",
-    "J": "其他", "K": "权益互换", "L": "小额", "U": "要约收购",
-    "W": "继承/遗嘱", "X": "价内行权", "Z": "投票信托",
-}
-_BUY_CODES = {"P", "A", "M", "C", "X"}
-_SELL_CODES = {"S", "F", "D"}
-
-
-def _direction(code: str) -> str:
-    if code in _BUY_CODES:
-        return "buy"
-    if code in _SELL_CODES:
-        return "sell"
-    return "other"
-
-
-def _strip_ns(root: Any) -> None:
-    """就地剥掉 XML 命名空间（13F 的 informationTable 带默认命名空间）。"""
-    for el in root.iter():
-        if isinstance(el.tag, str) and "}" in el.tag:
-            el.tag = el.tag.split("}", 1)[1]
-
-
-def _text(node: Any, path: str) -> str:
-    """按相对路径取文本，缺失返回空串。"""
-    if node is None:
-        return ""
-    found = node.find(path)
-    if found is None or found.text is None:
-        return ""
-    return found.text.strip()
-
-
-def _to_number(text: str) -> Optional[float]:
-    if text in ("", None):
-        return None
-    try:
-        return float(text)
-    except (TypeError, ValueError):
-        return None
-
-
-def _parse_form4(xml_text: str) -> dict[str, Any]:
-    """解析一份 Form 4 XML → {owner…, transactions[]}。纯函数，供离线测试。"""
-    import xml.etree.ElementTree as ET
-
-    try:
-        root = safe_xml_fromstring(xml_text)
-    except (ET.ParseError, ValueError) as e:
-        raise RuntimeError(f"Form 4 XML 解析失败: {e}") from e
-    _strip_ns(root)
-    owner = {
-        "name": _text(root, "reportingOwner/reportingOwnerId/rptOwnerName"),
-        "cik": _text(root, "reportingOwner/reportingOwnerId/rptOwnerCik"),
-        "is_officer": _text(root, "reportingOwner/reportingOwnerRelationship/isOfficer") == "true",
-        "is_director": _text(root, "reportingOwner/reportingOwnerRelationship/isDirector") == "true",
-        "is_ten_pct": _text(root, "reportingOwner/reportingOwnerRelationship/isTenPercentOwner") == "true",
-        "title": _text(root, "reportingOwner/reportingOwnerRelationship/officerTitle"),
-    }
-    role_bits = [b for b, on in (
-        ("高管", owner["is_officer"]), ("董事", owner["is_director"]), ("10%以上股东", owner["is_ten_pct"]),
-    ) if on]
-    owner["role"] = "、".join(role_bits) or "申报人"
-    transactions: list[dict[str, Any]] = []
-    for tag, is_deriv in (("nonDerivativeTable/nonDerivativeTransaction", False),
-                          ("derivativeTable/derivativeTransaction", True)):
-        for tx in root.findall(tag):
-            code = _text(tx, "transactionCoding/transactionCode")
-            security = _text(tx, "securityTitle/value")
-            if not security:
-                security = _text(tx, "underlyingSecurity/underlyingSecurityTitle/value")
-            shares = _text(tx, "transactionAmounts/transactionShares/value")
-            price = _text(tx, "transactionAmounts/transactionPricePerShare/value")
-            n_shares, n_price = _to_number(shares), _to_number(price)
-            transactions.append({
-                "date": _text(tx, "transactionDate/value"),
-                "code": code,
-                "code_label": _TRANSACTION_LABELS.get(code, f"代码 {code}" if code else ""),
-                "direction": _direction(code),
-                "security": security,
-                "shares": n_shares,
-                "price": n_price,
-                "value": round(n_shares * n_price, 2) if n_shares is not None and n_price is not None else None,
-                "shares_after": _to_number(_text(tx, "postTransactionAmounts/sharesOwnedFollowingTransaction/value")),
-                "ownership": _text(tx, "ownershipNature/directOrIndirectOwnership/value"),
-                "is_derivative": is_deriv,
-            })
-    return {"owner": owner, "transactions": transactions}
-
 
 def insider_trades(ticker: str, days: int = 180, limit: int = 20) -> dict[str, Any]:
     """内部人交易：近 N 天内的 Form 4 申报，逐笔展开（日期倒序）。
@@ -1050,46 +632,6 @@ def _has_13f(cik: str) -> bool:
         return False
     forms = ((subs.get("filings") or {}).get("recent") or {}).get("form") or []
     return any(str(f).startswith("13F-HR") for f in forms)
-
-
-def _is_info_table(text: str) -> bool:
-    """判断一份 XML 是不是 13F 持仓表。
-
-    不能只匹配 `<informationTable`：不同申报人用不同命名空间写法
-    （实测 Bridgewater 是 `<ns1:informationTable xmlns:ns1=…>`）。
-    先按 XML 解析看根元素名，解析失败再退化为子串判断。
-    """
-    import xml.etree.ElementTree as ET
-
-    try:
-        root = safe_xml_fromstring(text)
-        return str(root.tag).split("}")[-1] == "informationTable"
-    except (ET.ParseError, ValueError):
-        return "informationTable" in text
-
-
-def _parse_13f_table(xml_text: str) -> list[dict[str, Any]]:
-    """解析 13F information table → 持仓行。纯函数，供离线测试。"""
-    import xml.etree.ElementTree as ET
-
-    try:
-        root = safe_xml_fromstring(xml_text)
-    except (ET.ParseError, ValueError) as e:
-        raise RuntimeError(f"13F XML 解析失败: {e}") from e
-    _strip_ns(root)
-    rows: list[dict[str, Any]] = []
-    for t in root.findall("infoTable"):
-        rows.append({
-            "issuer": _text(t, "nameOfIssuer"),
-            "class": _text(t, "titleOfClass"),
-            "cusip": _text(t, "cusip"),
-            "value": _to_number(_text(t, "value")),
-            "shares": _to_number(_text(t, "shrsOrPrnAmt/sshPrnamt")),
-            "share_type": _text(t, "shrsOrPrnAmt/sshPrnamtType"),
-            "put_call": _text(t, "putCall"),
-            "discretion": _text(t, "investmentDiscretion"),
-        })
-    return rows
 
 
 def _13f_period(cik: str, accn: str, files: list[str]) -> str:

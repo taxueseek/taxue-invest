@@ -35,6 +35,7 @@ TTSKILL_CONVERGED: dict[str, str] = {
     "TTFUND_BASE_INFOS": "fund 快照链内嵌（详情+业绩+风险族）",
     "TTFUND_HOLDING_INFO": "fund 快照链内嵌（重仓+行业+资产配置）",
     "TTFUND_GOLD_INFO": "intent deep commodity（黄金）",
+    "TTFUND_INDEX_FUND_SELECTION": "research etf-rank（同指数基金横评 + 成分/估值）",
 }
 # westock（腾讯微证券）高频子命令 → cn 高层入口（2026-09-24 收敛）。
 # 只登记已收敛的：长尾 40+ 子命令仍走 `invest-cli westock <子命令>` 透传，
@@ -61,7 +62,9 @@ def converge_status(source: str, tool_id: str) -> str:
         return f"✅ {table[tool_id]}"
     if source == "ttskill" and tool_id in _TTSKILL_BOUNDARY:
         return "🔒 账户/交易域（不建高层入口，数据链路不消费）"
-    return "⬜ 透传: invest-cli yingmi <tool> 或 ttskill <skill_id>"
+    if source == "yingmi":
+        return "⬜ 透传: invest-cli yingmi <tool>"
+    return "⬜ 透传: invest-cli ttskill <skill_id>"
 
 
 # —— 动态清单获取（官方接口/本机索引为准，不手写第二份数据） ——
@@ -152,8 +155,8 @@ def run(source: str, as_json: bool = False) -> int:
         print("    westock <子命令>                                   腾讯微证券长尾能力（筹码/龙虎榜/资金流/")
         print("                                                      ESG/评级/产业链/板块估值）；高频五个已收敛到 cn；")
         print("                                                      `westock --help` 看 40+ 子命令")
-        print("    透传（高级/补漏）：wind / yingmi / ttskill — 清单见下方子命令")
-        print("    capabilities yingmi | ttskill | westock           官方能力清单+收敛标注")
+        print("    透传（高级/补漏）：wind / yingmi / ttskill / htbr / sfg — 清单见下方子命令")
+        print("    capabilities yingmi | ttskill | westock | sfg | htbr  官方能力清单+收敛标注")
         return 0
 
     if source == "yingmi":
@@ -209,5 +212,46 @@ def run(source: str, as_json: bool = False) -> int:
         print("  完整命令树：invest-cli westock --help")
         return 0
 
-    print(f"未知 source: {source}（可选: yingmi / ttskill / westock / 空=总览）", file=sys.stderr)
+    if source == "sfg":
+        from sources import sfg as sfg_src
+
+        items = [{"alias": k, "tool": v} for k, v in sfg_src.ALIASES.items()]
+        # 别名表外的上游工具也要可见，否则「上游有、invest-cli 没登记」的能力
+        # 在发现层是隐形的（agent 只会用 capabilities 里的东西）。分两类：
+        # 可用（可直接 invest-cli sfg <工具名>）与边界外（投顾账户/报告存档域）。
+        mapped = set(sfg_src.ALIASES.values())
+        extra = [
+            {"tool": t, "note": note}
+            for t, note in sfg_src.TOOLS_UNMAPPED.items() if t not in mapped
+        ]
+        if as_json:
+            print(json.dumps({"aliases": items, "other_tools": extra}, ensure_ascii=False, indent=2))
+            return 0
+        print(f"\n  见基行事(seefundgo) 公募基金 MCP 语义别名（共 {len(items)} 项）\n")
+        for it in items:
+            print(f"  sfg {it['alias']:<22} → {it['tool']}")
+        if extra:
+            print(f"\n  未建别名但可直传的工具（{len(extra)} 项；用完整 sfg_* 名调用）\n")
+            for it in extra:
+                mark = "🔒" if "边界外" in it["note"] else "⬜"
+                print(f"  {mark} {it['tool']:<34} {it['note']}")
+        print("\n  高层入口：intent deep fund / intent screen fund / intent portfolio / intent sfg")
+        print("  组合体检走异步：portfolio-submit 拿 job_id，再 --poll <job_id>")
+        print("  注意：本源为积分制，余额不足时所有工具被拒（通用取数请走妙想）")
+        print(f"  出处标注：{sfg_src.ATTRIBUTION_LINE}")
+        return 0
+
+    if source == "htbr":
+        from sources import htbr as htbr_src
+
+        items = [{"alias": k, "api_id": v} for k, v in htbr_src.ALIASES.items()]
+        if as_json:
+            print(json.dumps(items, ensure_ascii=False, indent=2))
+            return 0
+        print(f"\n  华泰柏瑞ETF 事实查询语义别名（共 {len(items)} 项，需内网/VPN）\n")
+        for it in items:
+            print(f"  htbr {it['alias']:<22} → {it['api_id']}")
+        return 0
+
+    print(f"未知 source: {source}（可选: yingmi / ttskill / westock / sfg / htbr / 空=总览）", file=sys.stderr)
     return 1

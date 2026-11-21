@@ -56,7 +56,7 @@ disable-model-invocation: true
 
 ---
 
-## 维度D：中国经济与周期定位
+## 维度C：中国经济与周期定位
 
 ### 中国经济核心指标
 
@@ -93,7 +93,7 @@ disable-model-invocation: true
 
 ---
 
-## 维度C：加密底部信号
+## 维度D：加密底部信号
 
 | 指标 | 信号 |
 |------|------|
@@ -135,7 +135,7 @@ disable-model-invocation: true
 
 ```bash
 # 宏观流动性（FRED：净流动性 = 总资产 − TGA − ON RRP + SOFR；需 FRED_API_KEY，免费注册）
-# 无 key 时自动降级 argo nbs_stats；PATH 无 invest-cli 时兜底 python3 "$HOME/.agents/skills/invest-cli/scripts/invest_cli.py"
+# 无 key 时自动降级 argo nbs_stats；PATH 无 invest-cli 时兜底 "$HOME/.local/bin/invest-cli"（安装器写入位置，见根 README）
 invest-cli intent macro
 # 宏观检索兜底/背景（argo nbs_stats 等引擎池）
 # 流动性/宏观经济（Wind economic_data）

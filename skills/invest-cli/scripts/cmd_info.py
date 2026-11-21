@@ -15,10 +15,11 @@ from __future__ import annotations
 import json
 import sys
 
-from sources import argo as argo_src
 
 
 def run(query: str, engine: str = "eastmoney", as_json: bool = False) -> int:
+    from sources import argo as argo_src
+
     if not query.strip():
         print("用法: invest-cli info <查询词> [--engine ...]", file=sys.stderr)
         return 1

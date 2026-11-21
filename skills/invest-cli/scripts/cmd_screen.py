@@ -38,7 +38,56 @@ def parse_markdown_table(md: str) -> list[dict]:
     return rows
 
 
-def run(condition: str, as_json: bool = False) -> int:
+def _trim_result(result, d, limit: int):
+    """`--limit` 的行裁剪：两种结果体各按自己的形状裁，顶层统一挂 screen_meta。
+
+    为什么默认 20：选股一次回 40+ 行 × 20 列，JSON 30KB 起（东财 historical
+    partialResults 更肥），agent 侧是纯上下文成本；`--limit 0` / `--all` 拿全量。
+    不静默丢数据：total / returned / truncated 三个数一定在。
+    """
+    import copy
+
+    if limit <= 0:
+        return result
+    out = copy.deepcopy(result)
+    total = returned = 0
+    if isinstance(d, list) and d:
+        node = out
+        for _ in range(3):  # 找到承载 items 的那层列表（妙想恒为 out["data"]）
+            if isinstance(node, list):
+                break
+            node = node.get("data") if isinstance(node, dict) else None
+        table = node[0] if isinstance(node, list) and node else {}
+        items = table.get("items") or []
+        total = len(items)
+        returned = min(total, limit)
+        table["items"] = items[:returned]
+        table["items_total"] = total
+        table["truncated"] = total > returned
+    elif isinstance(d, dict):
+        node = out
+        for _ in range(3):  # 东财是 data.data，妙想是 data；逐层找到 partialResults
+            if isinstance(node, dict) and "partialResults" in node:
+                break
+            node = node.get("data") if isinstance(node, dict) else None
+        if isinstance(node, dict) and "partialResults" in node:
+            rows = parse_markdown_table(node["partialResults"])
+            total = int(node.get("securityCount") or len(rows))
+            returned = min(len(rows), limit)
+            lines = [ln for ln in node["partialResults"].strip().splitlines() if ln.strip()]
+            if len(lines) >= 2 and rows:
+                kept = "\n".join(lines[:2] + lines[2:2 + returned])
+                node["partialResults"] = kept
+            node["rows_returned"] = returned
+            node["truncated"] = total > returned
+    out["screen_meta"] = {
+        "total": total, "returned": returned,
+        "truncated": total > returned, "limit": limit,
+    }
+    return out
+
+
+def run(condition: str, as_json: bool = False, limit: int = 20) -> int:
     from sources.route import fetch
 
     res = fetch("screen", condition)
@@ -82,7 +131,7 @@ def run(condition: str, as_json: bool = False) -> int:
         return 1
 
     if as_json:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(_trim_result(result, d, limit), ensure_ascii=False, indent=2))
         return 0
 
     # 终端输出，两种结果体两种渲染：

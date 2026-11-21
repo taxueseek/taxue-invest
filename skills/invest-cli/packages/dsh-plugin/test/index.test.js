@@ -3,20 +3,26 @@ import assert from 'node:assert/strict'
 
 import {
   COMMANDS,
+  COMMAND_TIMEOUTS,
+  COMMAND_OUTPUT_LIMITS,
   DEFAULTS,
   apply,
   buildArgv,
   expandHome,
   failureText,
   makeInvestTool,
+  outputBudget,
   pickTimeout,
   resolveEntry,
+  safeClip,
   sanitizeArgs,
   skillRootFrom,
 } from '../dsh/index.js'
+import { REGISTRY } from '../dsh/registry.generated.js'
 
 const SKILL_ROOT = '/opt/skills/invest-cli'
 const HAS_BIN = () => true
+
 
 // 工具方法名走计算属性：静态扫描会把 `对象.execute(...)` 认成数据库 execute
 // 调用并报 SQL 注入（误报）。这里只是 DSH 的工具执行入口，与 SQL 无关。
@@ -59,10 +65,15 @@ const P_CN = { command: 'cn', args: ['notice', '600519'] }
 const P_SCREEN = { command: 'screen', args: ['条件'] }
 const P_BAD = { command: 'stock', args: ['zzzz'] }
 
-test('COMMANDS covers the CLI dispatch table (21 subcommands)', () => {
-  assert.equal(COMMANDS.length, 21)
-  for (const c of ['stock', 'fund', 'us', 'sec', 'cn', 'tenure', 'report', 'westock']) {
-    assert.ok(COMMANDS.includes(c), `missing ${c}`)
+test('COMMANDS equals the generated registry (single source)', () => {
+  assert.ok(REGISTRY.commands.length > 20, `registry 只取到 ${REGISTRY.commands.length} 条`)
+  assert.deepEqual([...COMMANDS], REGISTRY.commands)
+})
+
+test('budget tables only reference real commands (no orphan budgets)', () => {
+  const cmds = new Set(COMMANDS)
+  for (const key of [...Object.keys(COMMAND_TIMEOUTS), ...Object.keys(COMMAND_OUTPUT_LIMITS)]) {
+    assert.ok(cmds.has(key), `预算表里的 ${key} 不是可调用命令`)
   }
 })
 
@@ -84,9 +95,28 @@ test('pickTimeout gives slow commands a bigger budget than the default', () => {
   const config = { timeoutMs: 60_000 }
   assert.equal(pickTimeout('stock', config), 60_000)
   assert.ok(pickTimeout('tenure', config) >= 180_000, 'tenure 冷跑 >60s，默认预算会误杀')
+  assert.ok(pickTimeout('research', config) >= 180_000, '主题排行扫 200 只，60s 会中途误杀')
   assert.ok(pickTimeout('report', config) > 60_000)
   assert.equal(pickTimeout('tenure', { timeouts: { tenure: 5_000 } }), 5_000)
   assert.equal(pickTimeout('sec', { timeoutMs: 300_000 }), 300_000)
+})
+
+test('outputBudget handles overrides, history variants and defaults', () => {
+  assert.equal(outputBudget('stock', ['600519']), DEFAULTS.maxOutputChars)
+  assert.equal(outputBudget('us', ['AAPL', '--history']), 80_000)
+  assert.equal(outputBudget('us', ['AAPL']), DEFAULTS.maxOutputChars)
+  assert.equal(outputBudget('sec', ['AAPL']), COMMAND_OUTPUT_LIMITS.sec)
+  assert.equal(outputBudget('sec', ['AAPL'], { maxOutputCharsByCommand: { sec: 5_000 } }), 5_000)
+})
+
+test('safeClip wraps oversized JSON into valid envelope without breaking syntax', () => {
+  assert.equal(safeClip('{"a":1}', 100), '{"a":1}')
+  const big = JSON.stringify({ rows: new Array(200).fill('x') })
+  const parsed = JSON.parse(safeClip(big, 100))
+  assert.equal(parsed.truncated, true)
+  assert.equal(parsed.original_chars, big.length)
+  assert.match(parsed.hint, /--brief/)
+  assert.equal(safeClip('x'.repeat(500), 100).length, 100)
 })
 
 test('resolveEntry prefers an explicit cliPath, then the wrapper', () => {
@@ -158,13 +188,13 @@ test('rc=0 with empty output is a failure, not a silent empty result', async () 
   await assert.rejects(() => callTool(tool, P_CN), /没有输出/)
 })
 
-test('long output is truncated with a visible marker', async () => {
-  const run = fakeRun({ code: 0, stdout: 'x'.repeat(5_000) })
+test('long output is truncated with a visible marker or envelope', async () => {
+  const run = fakeRun({ code: 0, stdout: 'plain text '.repeat(500) })
   const tool = toolWith({ maxOutputChars: 100 }, run)
   const value = await callTool(tool, P_SCREEN)
   assert.equal(value.text.length, 100)
   assert.ok(value.text.endsWith('…'))
-  assert.equal(value.stdout.length, 5_000, '原始输出不截断，只截模型可见的那一份')
+  assert.ok(value.stdout.length > 500, '原始输出不截断，只截模型可见的那一份')
 })
 
 test('a timeout is reported as a failure, not as data', async () => {

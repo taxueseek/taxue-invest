@@ -25,6 +25,8 @@ disable-model-invocation: true
 | 好不好 | 当前估值/收益率有吸引力吗？ | 历史分位 < 50% |
 | 贵不贵 | 安全边际够吗？最坏情况能承受吗？ | 极端测试通过 |
 
+> 三关是骨架不是同名同义：个股版（invest-stock）第二关=质量（护城河/管理层）、第三关=估值；单品种资产版按资产特性把估值分位前移到第二关、极端测试放第三关。跨技能引用时以各自定义为准。
+
 ## 资产类型专属细则
 
 ### 债券（利率债/信用债）
@@ -38,8 +40,9 @@ disable-model-invocation: true
 
 **数据获取**：
 ```bash
-python3 ~/.agents/skills/mx-data/scripts/get_data.py --type bond --code <代码> --metrics ["yield","duration","spread"]
-python3 ~/.agents/skills/mx-data/scripts/get_data.py --type spread --metrics ["credit_spread","term_spread","rating_spread"]
+# <mx-data> = mx-data 技能安装目录（与本技能同批安装，路径随安装器而定）
+python3 <mx-data>/scripts/get_data.py --type bond --code <代码> --metrics ["yield","duration","spread"]
+python3 <mx-data>/scripts/get_data.py --type spread --metrics ["credit_spread","term_spread","rating_spread"]
 ```
 
 **输出模板**：`mx-templates/bond_onepager.md` 或 `mx-templates/credit_spread.md`

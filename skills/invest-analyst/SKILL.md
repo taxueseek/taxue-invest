@@ -18,7 +18,7 @@ disable-model-invocation: true
 
 | 场景 | 触发词 | 输出模板 |
 |---|---|---|
-| IC 研报 | 「IC报告」「投资备忘录」 | `mx-templates/ic_report.md` |
+| IC 研报 | 「IC报告」「投资备忘录」 | `mx-templates/ic_memo.md` |
 | 行业深度 | 「行业深度」「行业研究报告」 | `mx-templates/industry_report.md` |
 | 首次覆盖 | 「首次覆盖」「深度报告」 | `mx-templates/ic_report.md` |
 | 业绩点评 | 「业绩点评」「财报分析」 | `mx-templates/earnings_review.md` |
@@ -30,11 +30,12 @@ disable-model-invocation: true
 **统一走 mx-data 数据层**：
 
 ```bash
+# <mx-data> = mx-data 技能安装目录（与本技能同批安装，路径随安装器而定）
 # 行业数据
-python3 ~/.agents/skills/mx-data/scripts/get_data.py --type industry --name "半导体" --metrics ["size","growth","pe"]
+python3 <mx-data>/scripts/get_data.py --type industry --name "半导体" --metrics ["size","growth","pe"]
 
 # 企业深度数据
-python3 ~/.agents/skills/mx-data/scripts/get_data.py --type enterprise --code <代码> --metrics ["revenue","profit","debt_ratio"]
+python3 <mx-data>/scripts/get_data.py --type enterprise --code <代码> --metrics ["revenue","profit","debt_ratio"]
 ```
 
 ## 估值方法论

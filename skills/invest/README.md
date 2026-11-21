@@ -5,7 +5,9 @@
 
 ---
 
-## 技能清单（v2.3）
+## 技能清单
+
+本清单跟随当前版本，不写死版本号（版本唯一权威在根 `taxue-invest/SKILL.md` 的 `version` 字段）。完整图谱与路由表见 `invest/SKILL.md`，本文只列入口问法。
 
 | 技能 | 职责 | 入口问法 |
 |------|------|---------|
@@ -13,11 +15,16 @@
 | invest-stock | 个股（A股/港股/美股） | 「看看茅台这只股票」 |
 | invest-fund | 基金/ETF/经理 | 「张坤的基金怎么样」 |
 | invest-asset | 债券/可转债/商品/REITs（单一品种资产） | 「这只转债值得买吗」「黄金能配吗」「REITs怎么看」「利率债现在怎么看」 |
-| invest-macro | 宏观与市场环境 | 「市场过热了吗」 |
 | invest-allocation | 资产配置 | 「我的配置合理吗」 |
+| invest-pool | 基金池与选基 | 「帮我建个基金池」 |
+| invest-risk | 风险与纪律 | 「我的仓位安全吗」 |
+| invest-enterprise | 企业深度分析 | 「分析一下这家企业的信用」 |
+| invest-macro | 宏观与市场环境 | 「市场过热了吗」 |
 | invest-discuss | 大师会诊（4视角×3深度） | 「让巴菲特和芒格看看」 |
 | invest-analyst | 机构级内容产出 | 「出一份茅台的IC报告」 |
 | invest-cli | 统一数据层（CLI） | 「用cli查一下茅台」 |
+| mx-data | 数据层：invest-cli 统一封装 | 「取一下茅台的财务数据」 |
+| mx-templates | 呈现层：报告模板 | 「用模板出报告」 |
 
 > 2026-09-03：invest-bond / invest-convertible / invest-commodity / invest-reit 四技能合并为 invest-asset（同一三关模板×四种资产参数，资产细则见 `invest-asset/references/asset-*.md`）。原四技能注册链已删除，历史原文在 `~/.claude/skills-archive/2026-09-03_merged-invest-asset/`。
 
@@ -39,7 +46,7 @@
 
 - 所有取数走 `invest-cli`（`stock/fund/us/screen/intent`），不为单个数据源单独路由
 - 声明真源 `data-sources.yaml`；`invest-cli datasources` 查看本机可用快照链
-- 命令入口 `invest-cli`（PATH）；无命令时兜底 `python3 "$HOME/.agents/skills/invest-cli/scripts/invest_cli.py"`
+- 命令入口 `invest-cli`（PATH）；无命令时兜底 `"$HOME/.local/bin/invest-cli"`（安装器写入位置）
 - 整单回退、不混字段；输出必须标注数据来源
 
 ---
@@ -52,11 +59,11 @@
 
 ## 安装使用
 
-把本目录下 9 个技能目录复制到技能根（`~/.agents/skills/` 或 `~/.zcode/skills/`），即装即用。可选依赖：`pip3 install yfinance`（美股全量快照）、`EASTMONEY_APIKEY`（港股/东财链路）。
+把仓库 `skills/` 下的技能目录挂到技能根（`~/.agents/skills/` 或 `~/.zcode/skills/`），即装即用；目录数以 `skills/` 实际内容为准，不在此写死。可选依赖：`pip3 install yfinance`（美股全量快照）、`EASTMONEY_APIKEY`（港股/东财链路）。
 
 ```bash
-# 建议补一个 PATH 入口（可选）
-ln -s "$HOME/.agents/skills/invest-cli/scripts/invest_cli.py" ~/.local/bin/invest-cli
+# 建议补一个 PATH 入口（可选）：<skills-root> = 本机技能安装根（见上文安装说明）
+ln -s "<skills-root>/invest-cli/scripts/invest_cli.py" ~/.local/bin/invest-cli
 ```
 
 ---
@@ -73,13 +80,7 @@ ln -s "$HOME/.agents/skills/invest-cli/scripts/invest_cli.py" ~/.local/bin/inves
 
 ## 版本历史
 
-| 版本 | 说明 |
-|------|------|
-| v2.3 | 消融式维护：.codex 注册链对齐（删 3 死链补 6 缺失，四套链 9/9）、死路由清理（discuss/analyst/fund）、退役文档对齐（cli-runtime 重写、design 稿归档）、命令路径统一 |
-| v2.2 | 薄单品种四合一：invest-bond/convertible/commodity/reit → invest-asset（同一三关模板×四种资产参数，注册数 12→9） |
-| v2.1 | 口径统一（cli-runtime 以入口映射表为真源）、回归修复（analyst 路由/导航表）、死引用与断链清理、references 相对 symlink 收敛、invest-cli 命令入口化 |
-| v2.0 | 真源归并 `_shared`、接入 invest-analyst、任务后导航、维护机制 |
-| v1.0 | 全面重构：统一三关审查框架、动态时间算法、覆盖股基债商+配置+圆桌 |
+完整版本记录见 `invest/CHANGELOG.md`；版本号唯一权威是根 `taxue-invest/SKILL.md` 的 `version` 字段。此处不再复述一份，避免三处各记各的。
 
 ---
 

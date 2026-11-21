@@ -1,5 +1,168 @@
 # Changelog
 
+> 版本号唯一权威：根 `taxue-invest/SKILL.md` frontmatter 的 `version` 字段；
+> 本文件跟随记录。公开仓 README 的 Version History 由发布脚本
+> `scripts/publish-public.sh` 同步时带上，不再单独维护。
+> （2026-10-25 起生效；此前三处各记各的，v2.9/v3.0/v3.1 三个数并存。）
+
+## v3.2.2（2026-11-21 · 公开合版发布：金融口径收口 + sfg/htbr 接入 + 单源治理 + 验收自动化）
+
+面向公开仓 `v3.1 → v3.2.2` 的对外合版发布（汇总内部迭代 v3.2–v3.8.2 全部已落地已验证改动）。**相对 v3.1 改进与新增：**
+
+- **金融口径与跨资产路由收口**：美股默认链改为 `yfinance > fmp > tencent > tiingo`（`bitget` USDT 代币价移出默认股票快照链）；港股链优化为 `eastmoney > tencent > yfinance`；`intent macro` 按中美地区分流（避免美联储失败兜底中国统计局）；`intent deep bond` 补齐 `wind → mxds` 降级链；`intent deep fund` 定型为 `盈米诊断 → route 结构化快照 → 妙想兜底`。
+- **新增数据源与能力发现**：接入见基行事（seefundgo）公募基金 MCP（`invest-cli sfg` / `intent sfg`，积分制，专攻多因子选基、经理画像、归因与异步组合体检 420s 轮询，纯关键词搜基金直走盈米省积分）与华泰柏瑞 ETF（`invest-cli htbr`）；`capabilities` 发现层覆盖 `yingmi`/`ttskill`/`westock`/`sfg`/`htbr`；新增 `research etf-rank` 指数基金横评与 `invest-recap-card` 复盘卡片。
+- **工程治理与安全底座**：SSRF 四层安全闸收口至 `sources/_http.py` 并加 AST 守卫；信封与健康状态词收口至 `sources/envelope.py`；命令与 DSH 插件元数据收口至 `command_registry.py` 单源；新增 `INVEST_CLI_DISABLE_SOURCES` 停用集与 DSH 面板开关墙；新增 `invest-cli doctor` 六面体检与运行时 `usage_log` 账本；依赖收口至 `pyproject.toml` + `uv.lock`；`etf_analytics.py` 拆分渲染层 `_etf_render.py`。
+- **验证基线**：`check.py` 全绿（pytest 770 passed + ruff F821/F401 + compileall + 版本记账 + 派生校验 + DSH 插件 30/30 passed）。
+
+## v3.8.2（2026-11-21 · v3.8.1 细节缺陷收口：条件解析反转 / 超时假成功 / 积分保护）
+
+修复 v3.8.1 审查暴露的 4 处实现缺陷。**相对上一版改进：**
+
+- **修复 `_parse_conditions` 三处金融条件解析缺陷**：比较词与 `%` 改为紧邻各自指标词解析，修复「年化收益大于 15% 且回撤低于 20%」收益方向被反判为 `yieldMax`、「收益大于 3% / 回撤低于 5%」漏除 100、「管理费低于 1.5%」按 150% 传入的问题；清理未使用的 `_NUM_RE`。
+- **修复 `sfg.poll_portfolio` 超时假成功**：超时返回显式置 `"ok": False`，避免沿用 `running` 态响应的 `ok=True` 导致 `invest-cli sfg --poll` 返回退出码 0。
+- **积分保护**：`intent screen fund` 仅在解析出多因子 `conditions` 时调用积分制 `sfg_screen_funds`，纯名称关键词直接走无积分墙的盈米 `SearchFunds`。
+- **结构化快照优先**：`intent deep fund` 降级链调为 `盈米诊断 → route.fetch("fund") → 妙想兜底`，确保无盈米 Key 时先走确定性结构化快照（`hithink > ttskill > eastmoney`）。
+
+## v3.8.1（2026-11-21 · sfg 定位回正：积分制源不做通用主路 + 三处实测缺陷修复）
+
+v3.8 把 sfg 提为三条路由的**主路**，但当日实测暴露前提不成立：**sfg 是积分制**，余额 0 时所有工具被拒（含 `sfg_help`），报错「积分余额不足…请签到或联系管理员充值」。用会断供的源当主轴，等于把通用取数押在配额上。**相对上一版改进：**
+
+- **定位回正：通用取数走妙想，基金垂直深取走 sfg**。`sfg` 只做妙想没有的能力——经理画像、绩效归因、风格漂移、选基排行榜、组合体检；通用基金查询回到无配额墙的通道。
+  - `intent deep fund` 降级链改为 `盈米诊断 → 妙想基金事实 → route.fetch("fund")`，中段从 sfg 换成 mxds（实测两条路径 0.45s，且不再受积分影响）。
+  - `intent portfolio` 保留 sfg 首选（组合体检是唯一通道），但单只/空 codes 直接走盈米，并为 sfg 不可用补 `fallback_from/fallback_error`，排障能看到首选源缺席原因。
+  - `data-sources.yaml` 与 SKILL.md 写明积分制与配额依赖，`capabilities sfg` 输出提示「通用取数请走妙想」。
+- **修复 `intent screen fund` 条件未传给上游**：`sfg_screen_funds` 的 props 只有 `conditions/logic/limit/fund_type/only_main`，旧代码传 `{"query": t}` 恒回「请传 conditions」（实测）。现按上游口径构造 `conditions` 数组（year 必填、收益/回撤用小数、回撤负数口径）；数字改为**贴着指标词**取——旧写法全文 findall 会把「近3年收益大于20%」读成收益 3%、「2024年夏普大于1」读成夏普 2024。判据词去掉裸「前」，避免「白酒基金前十」被误判成阈值筛选。
+- **修复 `--poll` 在真实耗时下拿不到结果**：上游组合体检 succeeded 实测 298.9s / 340.2s，而 `poll_portfolio` 默认上限 180s，会在结果落盘前返回 `running`（等于白提交一次）。上限抬到 420s，CLI `TIMEOUTS["sfg"]` 同步抬到 420s；超时输出带 `job_id` 与已等待时长可续查；轮询间隔改按上游 `retry_after_seconds` 退避。
+- **发现层补齐**：`capabilities sfg` 列出 11 个未建别名但可直传的工具，其中投顾账户域（`sfg_client_*`/`sfg_advisor_*`）显式标🔒边界外；`mx-data` 删掉不可达的 `fund_deep` 场景（`--type` choices 与 `detect_scenario` 都到不了，属死路）。
+- 新增 8 条离线回归锚（轮询上限覆盖实测耗时、超时可续查、conditions 解析、排名意图不误判、未映射工具可见、deep fund 不走 sfg）；测试 763→768，`check.py` 全绿。
+
+## v3.8（2026-11-21 · 方案 B：金融口径收口 + sfg 接入规范化 + 能力分层重组）
+
+按零基原则、奥卡姆剃刀、第一性原理与 MECE 原则对数据源搭配与路由层做系统性收口。**相对上一版改进：**
+
+- **金融口径修正（美股/港股/宏观/债券）**：
+  - 美股默认快照链改为 `yfinance(40) > fmp(38) > tencent(37) > tiingo(36)`，`bitget`（USDT 合成代币价，无基本面）移出默认股票快照链（`route_kinds: []`），消除代币价压过基本面源的口径倒挂。
+  - 港股链局部优先级微调（`MARKET_PRIORITY_OVERRIDE`）：`eastmoney > tencent > yfinance`，`eastmoney` 失败时优先走 189ms 零鉴权腾讯行情，避免在境内网络为 Yahoo 支付 2s 探测延迟。
+  - 宏观链 `intent macro` 按地区分流：中国宏观走 `ttskill(cn) → argo(nbs_stats)`，美国/美联储流动性走 `FRED → ttskill(us) → argo(macro)`，消除「美联储失败兜底到中国统计局」的口径错配。
+  - 债券深取 `intent deep bond` 补齐 `wind → mxds` 兜底链，无 Wind Key 时不再单点硬死。
+- **公募基金数据源 MECE 定编与路由统一**：
+  - 接入见基行事（seefundgo）公募基金 MCP（`invest-cli sfg` / `intent sfg`），收口到 `sources/envelope.py` 单源信封、`resolve_fund_code` 24h 磁盘缓存、`resolve_tool` 严格拦截未知别名，并在 `command_registry.py` 补齐 `sfg` 180s 超时与 60k 输出预算。
+  - `intent screen fund` 与 `intent portfolio` 升级为 `sfg` 主路、`yingmi` 兜底（显式盈米 JSON 保持直达兼容）；`intent deep fund` 补齐 `yingmi → sfg → route.fetch("fund")` 三级降级；`mx-data` 的 `fund_deep` 统一指向 `intent deep fund`，消除双脑裂。
+  - `capabilities` 发现层纳入 `sfg` 与 `htbr` 语义别名清单。
+- **模块瘦身**：`etf_analytics.py` 终端渲染逻辑拆入 `_etf_render.py`（主模块 1211→1052 行），对外签名不变。
+
+## v3.7（2026-11-09 · 隐式状态机显式化：场景单源 + 阶段编号收口）
+
+把散在多处、各自漂移的隐式状态机收敛为可读的单一真源，全部**只改结构与判据、不加功能**。**相对上一版改进：**
+
+- **P1 场景状态机单源**：`mx-data/scripts/query_router.py` 的 `SCENARIO_COMMANDS` 此前只承载展示名与命令文本，而 argv 分支在 `get_data._scenario_cmd()`、取数映射在 `get_data._FETCHERS`——同一场景的状态散在三处，加一个场景要改三处，漏一处就是「文档说走 A、实际走 B」。现每个场景在一个表项里同时定义 `name` / `argv`（含 `<code>` `<query>` 占位）/ `route_kind`（走 `route.fetch` 的 kind 与 market，`None` 表示不经快照链），`_scenario_cmd()` 与 `_FETCHERS` 全部删除并改为派生；`test_mx_data_router.py` 新增 3 条用例钉住「表 = argv = 取数路由」三者一致。
+- **P2 阶段编号收口**：`invest-macro` 的维度编号是 A/B/D/C（D 插在 B 与 C 之间），`invest-risk` 的小节顺序是 1/2/5/3/4——两处都是「内容对、编号错」，读者按编号推导执行顺序会走偏。现按文档顺序重排为 A/B/C/D 与 1/2/3/4/5，正文内容未改。
+- **P3 失效文档链接清理**：`invest-cli/docs/INDEX.md` 的 15 条历史报告链接指向 2026-11-09 已归档到 `docs-local/archive/` 的文件，链接全部失效。改为指向归档目录的清单 README（归档位置与内容会变，链接留在原处只会积累失效链接）；`docs/` 只留 3 份现行文档。
+- **P4 文档表与代码表对齐**：`mx-data/SKILL.md` 场景表删掉代码里不存在的 htbr 行（场景表只写 `SCENARIO_COMMANDS` 内的 9 个场景，由 `test_doc_source_truth` 钉住）；`test_doc_source_truth` 的对应断言改为按 `argv` 首词校验（`--json` 是输出旗标，文档不写）。
+- 测试 726→729；`check.py` 全绿。
+
+## v3.6（2026-11-09 · argo v2.13.0 思路迁移：SSRF 收口 + 状态真源 + 运行时可观测）
+
+按 argo v2.13.0 的优化思路做五处收口，全部**只改结构与判据、不加功能**。**相对上一版改进：**
+
+- **P0 SSRF 旁路收口**：eastmoney 的 `requests.post`（screen 与 cmd_stock/cmd_fund 的东财查询）与 mxds 的裸 `http.client` 此前**完全不过**共享安全闸，DNS 公网校验与禁重定向对它们形同虚设。现新增 `sources/_http.guarded_request`（POST 形态，过同一套四层闸），两条路径并入；新增 `test_http_gate.py` 用 AST 扫描钉死「生产代码不得出现 requests/http.client/裸 urlopen」，新增适配器再开旁路即红。
+- **P1 信封与状态词单点真源**：新增 `sources/envelope.py`，收口 5 份重复的 `_envelope`（hithink/fmp/tiingo/tencent/bitget）与 fund_classifier、sec_edgar 的变体；doctor 的 27 处 `pass/warn/fail/skip` 字面量收口为 `HEALTH_*` 常量，`is_blocking()` 统一退出码判据。新增 `test_envelope_truth.py` 钉住「适配器必须走真源、doctor 不得有手抄状态词」。
+- **P2 账本交付条数**：`route.fetch` 的成功记录新增 `count`（列表取长度、dict 取 1）与 `empty` 标记；`_usage_bucket` 按源聚合 `delivered`/`empty`，doctor 与 datasources 展示「交付：hithink 1 条、mxds 1 条」——此前只有耗时，读不出「慢源是拖尾还是唯一出货」（argo 的 `engine_results` 同构）。
+- **P3 空结果基线破位**：`usage_stats` 新增 `suspected_stale` 判据（历史曾非空 + 近期连续 ≥3 次空 + 跨 ≥2 查询），doctor 报「疑似失效」并 WARN。**零新增请求**——只读已有账本。判据常量收在 `envelope.py` 的 `STALE_*`。
+- **P4 文档分层**：14 份过程报告（第一~十轮治理报告、审查/复核/hithink 回归等）从 `invest-cli/docs/` 归档到 `taxue-invest/docs-local/archive/`（新增索引 README，gitignore 排除出公开仓）；`docs/INDEX.md` 只留现行文档并指向归档。
+- **P5 依赖收口到 uv**：新增 `pyproject.toml`（真源）+ `uv.lock`（62 包钉版）+ `.python-version`（3.15）；`requirements.txt` 与 `requirements-dev.txt` 降级为 `sync_requirements.py` 的派生清单，`check.py` 挂 `--check` 门禁；新增 `test_dependency_source_gate.py` 机械对账「清单依赖在真源里、真源依赖在 lock 里」。
+- 测试 706→726；`check.py` 全绿；实测 `quote`/`stock`/`intent mxds`/`screen` 四条路径取数正常，账本已记 `count` 字段。
+
+## v3.5（2026-11-08 · 数据源选择能力三段式 + 第十轮补记）
+
+用户实测投诉「DSH 插件是死面板、不能像 Argo 插件那样选择」的诊断与修复：面板不是坏了，是**面板下面没有可操作的能力层**——Argo 的选择 = 引擎层 env 原语 → 插件 config → 面板控件三层配合，invest-cli 缺第一层。**相对上一版改进：**
+
+- **引擎侧原语**：`route.disabled_sources()` 读 `INVEST_CLI_DISABLE_SOURCES`（逗号/分号/空白分隔，大小写不敏感），candidates/pick/chains 一处过滤三层生效；语义是「不要自动选它」，具名直调（`invest-cli wind / htbr`）不受影响；`datasources` 文本与 JSON 都报停用态。conftest 对该 env autouse 隔离（防本机环境让链序断言随环境腐烂）。
+- **插件 config 桥接**：`disabledSources` 进 command_registry.DEFAULTS 单源（sync_registry 重新生成两侧产物）、index.js Config Schema 与 cordis.patch.yml；resolveEntry 组装 spawn env（空值不注入，解析口径与 route 侧逐条对齐）。invest-cli 每次调用都是新进程，面板改完即时生效。
+- **面板开关墙**：「数据源拓扑」页从只读表升级为 17 源 checkbox 开关（写 config.disabledSources；行内元数据 priority/coverage/凭据需求取自注册表生成物），删掉硬编码的五条快照链——mxds 移出 stock 链后面板链序早已失真，链序是运行时事实，归 `invest-cli datasources` 自报，面板不再复述。
+- **注册表启动校验**：注册表声明了命令但没有 cmd_ 实现时启动即给可读报错（原先是裸 KeyError）。
+- **第十轮补记**：91234b9（命令单一注册表 + 直取账本 + FMP 链尾兜底）当时无轮次报告，补记见 `docs/性能与缺陷治理报告_2026-11-08_第十轮.md`；测试 695→699。
+
+## v3.4（2026-11-08 · 命令单一注册表 + 直取账本 + FMP 兜底）
+
+第十轮：把「同一个命令事实存五处」的结构缺口收成一个注册表，并补上直取源的可观测性。**相对上一版改进：**
+
+- **命令与插件元数据单源**：新增 `scripts/command_registry.py`，登记命令 id、分类、中英文名、超时、输出预算与直取源；`invest_cli.build_parser()` 与 dispatch 从它派生，插件 `index.js` 消费生成的 `dsh/registry.generated.js`，`client.js` 的注册表块由 `scripts/sync_registry.py` 生成。加命令只改注册表一处；`check.py` 增 `sync_registry.py --check`，生成物过期即红。插件注释与 `cordis.patch.yml` 删掉写死的命令数（21/24 都曾漂移）。
+- **直取源进入运行时账本**：`wind/yingmi/ttskill/htbr/westock/sec/fmp` 绕开 `route.fetch`，过去账本只记快照链。现由 CLI 入口写 `scope:"direct"` 记录，`usage_stats` 单列 `direct` 桶；`doctor` 与 `datasources` 报告直取失败与尾部连续失败。
+- **FMP 补齐 `us()` 适配**：把深取结果收敛为 `cmd_us` 的统一快照形状，priority 34 排在 bitget 之后，只在前四源全败时消耗免费额度；`route_kinds: [us]` 与 `coverage` 同步，链序测试钉住「fmp 必须末位」。
+- **去重**：`invest-cli fund --analytics` 与 `cmd_fund.py --analytics` 的整段装配逻辑合并为 `fetch_fund_analytics()`，删掉约 55 行逐字重复。
+- **默认值分场景**：`research --limit` 不再全局写死 200；`fund-rank` 仍 200，`etf-rank` 默认 50，避免单行含成分股的 JSON 越过插件 60k 输出预算。
+- **文档**：`docs/data-sources.md` 补 index_hub / etfirst 的定位与启用条件，并说明 `route_kinds` 为空只表示直取、priority 不参与快照链。
+
+## v3.3（2026-11-08 · 运行时证据层 + htbr 接入 + 真值单源收口）
+
+一天内四轮改进的收口（四代理架构审计 → 方案二真值单源化 → htbr 接入与充分运用 → 运行时账本 → 收敛轮），8 笔提交：
+
+- **判据收口到运行时证据**：新增 usage 账本（route.fetch 唯一写入点，缓存命中与输入层拒绝不记，诊断命令不自记），doctor 与 datasources 共读同一份 24h 汇总（usage_stats 唯一聚合点）；KIND_FNS 9→4——bond/index/macro/news/notice 恒空链的假承诺摘除，test 钉住「元组 == yaml route_kinds 并集」。
+- **SSRF 四层闸并口**：tiingo/fmp 各自内联的 _NoRedirect/_OPENER/_assert_public_host 全删，唯一真身收口 sources/_http.guarded_open；适配器只保留信封语义。
+- **htbr 华泰柏瑞ETF 接入**：透传官方 htbr-etf-skill（72 接口事实查询面，route_kinds 留空不进快照链），detect 以 ~/.htbr/credentials.json 为判据（1.0.8 起不读环境变量）；导航别名 56/72（经理 20 + 指数 13 全量 + 分辨率入口），暂停接口不进导航；空结果 empty 标记不落缓存；错误话术映射结构化 error_kind（quota 当日勿重试/scope 勿绕过）。
+- **真值单源收口**：invest 门闩表与 mx-data 场景表删源名列（源名只归 yaml 与运行时输出，test_doc_source_truth 钉住场景→命令、命令存在性与源名黑名单）；SKILLS 路径相对定位；venv 版本行退出文档改 doctor 自报；插件拓扑表 htbr keyless 纠正（需官网 Key）。
+- **体积门禁固定红线**：MAX_LINES=1400 锁死，删「当前最大值上方约 8%」的合法化机制。
+- **发布链修复**：publish-public.sh 的 --exclude scripts 加根锚定（此前把 skills/invest-cli/scripts 剔出公开仓，公开仓 invest_cli.py 冻结在 10-19 的根因）；发布前挂 check.py 与插件 Node 单测两道门禁；根级 packages/dsh-plugin 以相对软链入真源（GitHub 安装路径不再被 --delete 删除）；check_public_sync 对账门禁进 pre-commit（公开仓不得领先真源）。
+- **记账机制化**：check.py 新增版本记账门禁（SKILL.md version 与 CHANGELOG 顶条目一致），「改版本忘记账」从惯例问题变成门禁拦截。
+- **README 增设 Feedback 入口**；capability-gap 台账迁 invest-cli/docs 并落地 research etf-rank 关闭指数基金横评缺口；测试 614→682。
+
+## v3.2（2026-10-25 · 结构治理 + 验收自动化 + 运行时统一 venv）
+
+一次体检驱动的治理轮：代码基本面全绿（614 tests / 17 源可用），问题集中在
+仓库结构、验收时机与运行时一致性三处。**相对上一版改进：**
+
+- **发布链路固化**：新增 `scripts/publish-public.sh`（clone 公开仓 → 真源 rsync
+  镜像 → 内置脱敏门 → 演练/--commit/--push 三档）；GPT 工作区大仓上误配的
+  origin（直接指向公开仓，一条手滑 push 会把整个个人工作区推上去）已摘除。
+- **分支归位**：`~/.agents` 仓 main 从 6 月 13 日快进合并 174 个提交（此前的
+  事实主干挂在名不副实的 `feat/mxds-mcp-integration` 上），删两个旧分支。
+- **产物出仓**：`report` 默认输出从 CWD/`fund_reports/` 改 state 目录
+  `reports/<代码>/`（1.7M PDF 不再堆进 skill 目录）；`skills-backup/` 200M
+  移 `.trash/`；第三方技能 mx-mcp-install 收编进真源并按家族约定挂软链。
+- **提交门禁**：pre-commit hook——staged 含 `taxue-invest/` 时自动跑
+  `check.py`（pytest + F821 + F401 + compileall），F821 类回归「活两天没人
+  发现」的窗口关闭。
+- **live 用例隔离**：7 条真实联网用例加 `live` marker 默认排除
+  （`pytest -m live` 显式跑），「跑一次全绿」在任何机器上是同一句话。
+- **运行时统一 venv**：mx-data 被任意解释器启动时自动 exec 进 venv 3.14
+  （原仅美股场景缺 yfinance 才升级）。系统 3.9 已 EOL（2025-10）且 LibreSSL
+  打 NotOpenSSLWarning 假故障——统一后退出热路径、生产与主测解释器一致。
+  公开仓 Python 3.9+ 兼容下限不变（venv 缺失时任意 3.9+ 是合法兜底）。
+- **环境修复实锤**：10-23 Python 清理把系统 3.9 的 pyyaml/requests 一并清掉，
+  mx-data 快路径静默退化成 subprocess 慢路无人报警——已装回，且新增
+  `invest-cli doctor` 子命令（数据源/缓存/解释器/软链/DSH 副本漂移五项自检，
+  11 条单测）把这个盲区变成一条命令；首跑即抓到 DSH 副本 license 漂移与
+  PATH python3 缺包两真问题。
+- **DSH 同步链**：新增 `packages/dsh-plugin/scripts/sync-local.sh`
+  （--check 漂移检测 / 同步 / 复检闭环），license 漂移（源 Prosperity-3.0 vs
+  副本 MIT）已修复。
+- **文档单一真源**：invest-cli SKILL.md 数据源表删除（11 源的表永远追不上
+  17 源的 yaml，运行时真值就是 `datasources`）；补 kline/westock/report/
+  info/doctor 子命令速览；mx-data stderr 加 urllib3 告警过滤（挂两轮的一行
+  修复，现为 venv 化后的二线防线）。
+- **测试数字**：3.14 venv 633 collected（625 passed + 1 skipped + 7 live
+  deselected，10.1s）；3.9 全量 633 collected（609 passed + 17 skipped + 7
+  deselected，4.9s，此前「停在 35% 无 summary」的 execv 悬案已破）。链头断言
+  按解释器能力钉：缺 yfinance 环境钉 tencent 降级真值而非误报。
+
+## v3.1（2026-10-19 · 数据源适配器迭代 + 测试扩充 + 美股支持）
+
+eastmoney/hithink/tencent/tiingo/wind/mxds/ttskill/etfirst 八源适配器迭代，
+路由逻辑增强；新增 8 个测试文件（含 test_doc_source_truth / test_envelope /
+test_module_size_gate / test_py39_compat / test_static_imports 等守卫层）；
+invest-stock 与 mx-data 美股用法增强，路由表补「季报/财报/研报」关键词；
+docs/INDEX.md、check.py、requirements-dev.txt 落地。细节见公开仓 README
+v3.1 增量段与 `invest-cli/docs/性能与缺陷治理报告_2026-10-19_第六轮.md`。
+
+## v3.0（2026-10-13 · 三层架构 + 推理档位）
+
+invest 系列从并列技能改为分层架构：方法论（invest-* 10 技能）/ 数据
+（mx-data，invest-cli 统一封装）/ 呈现（mx-templates）。推理分低/中/高三档、
+公开默认低档；新增 invest-pool / invest-risk / invest-enterprise / invest-discuss /
+invest-analyst；invest-cli 新增 tenure / report / research fund-rank 命令，
+MIT 改 Prosperity Public License 3.0。
+
 ## v2.9（2026-09-27 · 第六轮：代码归一歧义仲裁 + 热路径白付 + 探测判据回归）
 
 前五轮都在做「热路径去白付 + 回退链收敛」。这一轮换了起点：**先按真实使用权重

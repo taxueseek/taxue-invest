@@ -11,8 +11,9 @@
 每条适配器至少要有一次「构造 Request → 过 guarded_open → 解析响应」的真实路径，
 HTTP 传输用桩替掉，但 import / 属性 / 参数形状全部走生产代码。
 
-覆盖范围：a1c4923 动过的两个出口（hithink、tencent），以及 stock/fund 链上
-mxds 的 coverage 契约（快照类工具必然返回表格 → 不得再进这两条链）。
+覆盖范围：a1c4923 动过的两个出口（hithink、tencent）、第九轮并口的两条旧内联
+出口（tiingo、fmp），以及 stock/fund 链上 mxds 的 coverage 契约（快照类工具
+必然返回表格 → 不得再进这两条链）。
 """
 from __future__ import annotations
 
@@ -104,6 +105,42 @@ def test_tencent_http_get_runs_end_to_end() -> None:
     assert "贵州茅台" in body
     assert rec.calls[0]["is_request"] is True
     assert "User-Agent" in {k.title() for k in rec.calls[0]["headers"]}
+
+
+def test_tiingo_get_json_runs_end_to_end() -> None:
+    """tiingo 曾内联一套闸，第九轮并口后必须真的走共享 guarded_open。"""
+    from sources import tiingo
+
+    rec = _Recorder(b'{"last": "329.4", "ticker": "AAPL"}')
+    original = tiingo.guarded_open
+    tiingo.guarded_open = rec
+    try:
+        payload, err = tiingo._get_json("https://api.tiingo.com/iex/?token=x&tickers=AAPL")
+    finally:
+        tiingo.guarded_open = original
+
+    assert err is None and payload == {"last": "329.4", "ticker": "AAPL"}
+    assert rec.calls[0]["is_request"] is True
+    assert rec.calls[0]["allowed_host"] == "api.tiingo.com"
+    assert rec.calls[0]["headers"].get("user-agent") == tiingo.PROBE_USER_AGENT
+
+
+def test_fmp_get_json_runs_end_to_end() -> None:
+    """fmp 与 tiingo 同一轮并口：出口统一走共享 guarded_open。"""
+    from sources import fmp
+
+    rec = _Recorder(b'[{"symbol": "AAPL", "price": 329.4}]')
+    original = fmp.guarded_open
+    fmp.guarded_open = rec
+    try:
+        payload, err = fmp._get_json(f"https://{fmp.API_HOST}/stable/quote?symbol=AAPL&apikey=x")
+    finally:
+        fmp.guarded_open = original
+
+    assert err is None and payload[0]["symbol"] == "AAPL"
+    assert rec.calls[0]["is_request"] is True
+    assert rec.calls[0]["allowed_host"] == fmp.API_HOST
+    assert rec.calls[0]["headers"].get("user-agent") == fmp.PROBE_USER_AGENT
 
 
 def test_mxds_not_in_stock_or_fund_snapshot_chains() -> None:

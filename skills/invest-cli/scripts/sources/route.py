@@ -13,18 +13,51 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import os
 import re
+import time
 from typing import Any, Callable, Optional
 
 from . import load_registry
 from .registry import detect
 
-KIND_FNS = ("stock", "fund", "us", "screen", "bond", "index", "macro", "news", "notice")
+# 可路由的 kind = registry 里所有 route_kinds 的并集。
+# 这里曾写 9 种，其中 bond/index/macro/news/notice 从未有任何源声明进链，
+# 是「看起来支持」的假承诺（实测恒空链）；test_route 钉住本元组与配置真源相等，
+# 新增可路由 kind 先改 yaml 的 route_kinds，本处同步，否则门禁变红。
+KIND_FNS = ("stock", "fund", "us", "screen")
 # 市场对默认快照链的排除（能力边界，不是优先级）
 MARKET_EXCLUDE = {
     ("stock", "hk"): frozenset({"hithink"}),
 }
+# 市场对默认快照链的局部优先级微调（v3.8）：
+# 港股链 eastmoney(50) 覆盖 21 项基本面；一旦失败，tencent(189ms 零鉴权)
+# 在境内网络远快且稳于 yfinance(2s 探测超时)，因此港股链顺序为
+# eastmoney > tencent > yfinance，不影响 A 股与美股链。
+MARKET_PRIORITY_OVERRIDE: dict[tuple[str, str], dict[str, int]] = {
+    ("stock", "hk"): {"tencent": 41},
+}
+
+
+def disabled_sources() -> frozenset:
+    """用户停用集（INVEST_CLI_DISABLE_SOURCES，逗号/分号/空白分隔，大小写不敏感）。
+
+    这是「面板选择」的引擎侧原语（与 argo 的 ARGO_DISABLE_ENGINES 同构）：DSH
+    插件面板把停用清单写进插件 config，spawn 时注入本环境变量，candidates/pick
+    据此把源从路由里摘掉。语义是「不要自动选它」——具名直调（invest-cli wind /
+    htbr）是用户点名，不受影响；datasources 会把停用源标出来。空值/未设置 =
+    全员参战。每次读 env 不缓存：CLI 每次调用都是新进程，无热路径压力。
+    """
+    raw = os.environ.get("INVEST_CLI_DISABLE_SOURCES", "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(
+        part.strip().lower()
+        for part in raw.replace(";", ",").replace("，", ",").split(",")
+        if part.strip()
+    )
+
 
 # 代码域守卫：纯数字代码落在**确定段**却与所问的 kind 不符时，直接拒绝。
 #
@@ -163,32 +196,64 @@ def _adapter_module(sid: str, conf: dict[str, Any]):
     return importlib.import_module(f"sources.{name}")
 
 
+def _deps_missing(mod) -> list[str]:
+    """适配器声明的运行期依赖里，当前解释器缺哪些（import 名口径）。
+
+    适配器把真依赖延迟到调用链深处 import（yfinance 包在 cmd_us.py:297 函数内、
+    cryptography 在 ttskill.py 函数内），适配器模块本体可导入不代表依赖可用——
+    candidates 若只按模块可导入性判链，缺件解释器仍会把 yfinance 排在 us 链头，
+    与文档真值「缺件时降级到腾讯行情」分家（test_doc_source_truth 红测根因）。
+    依赖在适配器模块层用 REQUIRED_IMPORTS 声明（写 import 名而非 pip 名），
+    此处 find_spec 逐个核；未声明的适配器不判缺，行为不变。
+    """
+    missing: list[str] = []
+    for name in getattr(mod, "REQUIRED_IMPORTS", ()) or ():
+        try:
+            if importlib.util.find_spec(name) is None:
+                missing.append(name)
+        except (ImportError, ValueError):
+            # 非法名（空串/悬空父包）按缺件处理：fail-closed，不进链
+            missing.append(name)
+    return missing
+
+
 def candidates(kind: str, market: Optional[str] = None) -> list[str]:
     """按 priority 降序返回「有能力回答该问题」的源，**不做可用性探测**。
 
     与 pick() 的分工：探测是贵的（yfinance 要真实 HTTPS），而它大多数时候
     用不上——A 股链里 yfinance 只是末位兜底，却会在每个冷探测窗口被探一次。
-    这里只做便宜的能力判定（coverage 含 kind + 适配器真有该方法），
-    可用性交给 fetch() 在**即将调用某个源之前**逐个判定。
+    这里只做便宜的能力判定（coverage 含 kind + 适配器真有该方法 +
+    声明依赖当前解释器可导入），可用性交给 fetch() 在**即将调用某个源之前**
+    逐个判定。
     """
     if kind not in KIND_FNS:
         return []
     registry = load_registry()
+    disabled = disabled_sources()
+    overrides = MARKET_PRIORITY_OVERRIDE.get((kind, market or ""), {})
     ranked = sorted(
         registry.items(),
-        key=lambda kv: kv[1].get("priority", 0),
+        key=lambda kv: overrides.get(kv[0], kv[1].get("priority", 0)),
         reverse=True,
     )
     excluded = MARKET_EXCLUDE.get((kind, market or ""), frozenset())
     out: list[str] = []
     for sid, conf in ranked:
-        if kind not in (conf.get("coverage") or []):
+        # route_kinds（若声明）才是「参与 route.fetch」的真值，coverage 只是展示标签：
+        # wind/yingmi/argo/index_hub/etfirst 等只经具名子命令直调，从不上链；
+        # 过去把两者混用一个字段，`datasources` 于是把「标签」当成了「链路能力」。
+        kinds = conf.get("route_kinds", conf.get("coverage") or [])
+        if kind not in kinds:
             continue
         if sid in excluded:
+            continue
+        if sid in disabled:
             continue
         try:
             mod = _adapter_module(sid, conf)
         except Exception:
+            continue
+        if _deps_missing(mod):
             continue
         if not callable(getattr(mod, kind, None)):
             continue
@@ -196,29 +261,37 @@ def candidates(kind: str, market: Optional[str] = None) -> list[str]:
     return out
 
 
-def pick(kind: str, market: Optional[str] = None) -> list[str]:
+def pick(
+    kind: str,
+    market: Optional[str] = None,
+    states: Optional[dict[str, dict[str, Any]]] = None,
+) -> list[str]:
     """返回该问题当前可用、且真有方法的数据源 id，priority 降序。
 
     供 `datasources` / `chains()` 这类需要「一次看清全链可用性」的场景；
+    可选传入 `states`（如 `registry.detect_all()` 的结果）避免重复探测。
     取数主路径请用 fetch()，它在调用前才逐个探测（见 candidates 注释）。
     """
-    registry = load_registry()
+    registry = load_registry() if states is None else None
     out: list[str] = []
     for sid in candidates(kind, market=market):
-        available, _detail = detect(registry.get(sid) or {})
+        if states is not None:
+            available = bool((states.get(sid) or {}).get("available"))
+        else:
+            available, _detail = detect((registry or {}).get(sid) or {})
         if available:
             out.append(sid)
     return out
 
 
-def chains() -> dict[str, list[str]]:
+def chains(states: Optional[dict[str, dict[str, Any]]] = None) -> dict[str, list[str]]:
     """给 datasources / 诊断用的默认链（按当前机器可用性）。"""
     return {
-        "stock_a": pick("stock", market="a"),
-        "stock_hk": pick("stock", market="hk"),
-        "fund": pick("fund"),
-        "us": pick("us"),
-        "screen": pick("screen"),
+        "stock_a": pick("stock", market="a", states=states),
+        "stock_hk": pick("stock", market="hk", states=states),
+        "fund": pick("fund", states=states),
+        "us": pick("us", states=states),
+        "screen": pick("screen", states=states),
     }
 
 
@@ -249,6 +322,106 @@ _INVOKE_ORIGINAL = _invoke
 
 
 def fetch(
+    kind: str,
+    arg: str,
+    *,
+    market: Optional[str] = None,
+    order: Optional[list[str]] = None,
+    invoke: Optional[Callable[[str, str, str], dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """真实取数的唯一入口：整单路由 + 运行时事实记录。
+
+    记账只在**默认路径**（未注入 order/invoke）发生：那是用户真实发生的调用。
+    测试注入链、缓存命中、输入层拒绝（空标的/代码域不符）都不写——前两者不是
+    真实取数，后者没有触碰任何源，记进去只会让 failure 统计被打错字污染。
+    """
+    started = time.perf_counter()
+    result = _fetch_impl(kind, arg, market=market, order=order, invoke=invoke)
+    if invoke is None and order is None:
+        _emit_usage(kind, arg, market, result, started)
+    return result
+
+
+def _result_row_count(result: dict[str, Any]) -> int:
+    """成功信封的「交付条数」：列表取长度，dict 取 1（快照），其余 0。
+
+    为什么不用更细的字段计数：各源 data 形状差异极大（快照 dict / 表格 list /
+    嵌套 payload），逐源定义「什么算一条」会变成第二套口径。这里用**最小可用
+    判据**：列表=元素数，dict=1（快照是单标的完整数据），其余=0。P3 的
+    suspected_stale 只需要区分「0 条」与「非 0 条」，这个粒度足够。
+    """
+    data = result.get("data")
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict) and data:
+        return 1
+    return 0
+
+
+def _emit_usage(
+    kind: str,
+    arg: str,
+    market: Optional[str],
+    result: dict[str, Any],
+    started: float,
+) -> None:
+    """一次真实取数 → 一条事实。任何异常都吞掉，绝不拖累取数。"""
+    if result.get("cached"):
+        return
+    # 失败且没有 tried：输入层在发起任何源调用前就拒绝了（空标的、代码域不符），
+    # 或候选链本身为空。它不反映数据源健康，记进去只会污染「连续失败」判据
+    # （用户连打 5 次错代码就会把 doctor 打成 FAIL）。
+    if not result.get("ok") and not result.get("tried"):
+        return
+    try:
+        from _common import usage_emit
+
+        record: dict[str, Any] = {
+            "kind": kind,
+            "market": market or "",
+            "arg": str(arg or "")[:64],
+            "ok": bool(result.get("ok")),
+            "elapsed_ms": int((time.perf_counter() - started) * 1000),
+        }
+        if result.get("ok"):
+            record["source"] = result.get("source")
+            # 交付条数（P2，2026-11-09）：回答「这个源这 24h 交付了多少条数据」，
+            # 用来区分「慢源拖尾」与「唯一出货」。argo 的 engine_results 同构。
+            record["count"] = _result_row_count(result)
+            # 空结果单独标记：ok=True 但 0 条是 suspected_stale 的判据基础
+            # （P3 消费）。快照类源 data 是 dict，条数恒为 1 或 0，标记仍成立。
+            if record["count"] == 0:
+                record["empty"] = True
+            if result.get("fallback_from"):
+                record["fallback_from"] = result["fallback_from"]
+                fb_err = str(result.get("fallback_error") or "")
+                record["fallback_error"] = fb_err[:300]
+                failed_sids = [
+                    e.split(":", 1)[0].strip()
+                    for e in fb_err.split("; ")
+                    if ":" in e and e.split(":", 1)[0].strip()
+                ]
+                if failed_sids:
+                    record["failed_sources"] = failed_sids
+        disabled = disabled_sources()
+        if disabled:
+            record["disabled"] = sorted(disabled)
+        else:
+            record["tried"] = list(result.get("tried") or [])
+            record["error"] = str(result.get("error") or "")[:300]
+            # 逐源原因（"sid: 原因; sid: 原因"）拆开存：doctor 要按源统计连续失败，
+            # 整串只够人读，统计还得再切一次。
+            record["errors"] = [
+                e.strip()[:200]
+                for e in str(result.get("error") or "").split("; ")
+                if e.strip()
+            ][:10]
+        usage_emit(record)
+    except Exception:
+        pass
+
+
+def _fetch_impl(
     kind: str,
     arg: str,
     *,
@@ -350,7 +523,7 @@ def fetch(
             if errors:
                 res = {
                     **res,
-                    "fallback_from": errors[-1].split(":", 1)[0],
+                    "fallback_from": errors[0].split(":", 1)[0],
                     "fallback_error": "; ".join(errors),
                 }
             if ttl:

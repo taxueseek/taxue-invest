@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{{TITLE}}</title>
+<meta name="author" content="市场策略观察">
+<meta name="description" content="{{DESCRIPTION}}">
+<meta name="keywords" content="A股,大盘复盘,行情策略,两市成交额,板块轮动">
+<meta name="generator" content="Kami">
+<style>
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: local("仓耳今楷02"), local("TsangerJinKai02"), local("TsangerJinKai02-W04");
+    font-weight: 400;
+    font-style: normal;
+  }
+  @font-face {
+    font-family: "TsangerJinKai02";
+    src: local("仓耳今楷02 W05"), local("TsangerJinKai02-W05");
+    font-weight: 500;
+    font-style: normal;
+  }
+
+  @page {
+    size: A4;
+    margin: 18mm 20mm 16mm 20mm;
+    background: #f5f4ed;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --parchment: #f5f4ed;
+    --ivory:     #faf9f5;
+    --near-black:#141413;
+    --dark-warm: #3d3d3a;
+    --olive:     #504e49;
+    --stone:     #6b6a64;
+    --brand:     #1B365D;
+    --border:    #e8e6dc;
+    --border-soft:#e5e3d8;
+    --tag-bg:    #E4ECF5;
+    --serif: "TsangerJinKai02", "Source Han Serif SC", "Source Han Serif CN", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", "STSong", "SimSun", Georgia, serif;
+    --sans: var(--serif);
+  }
+
+  html, body {
+    background: var(--parchment);
+    color: var(--near-black);
+    font-family: var(--serif);
+    font-size: 10.5pt;
+    line-height: 1.55;
+    letter-spacing: 0.3pt;
+  }
+
+  @media screen {
+    body { max-width: 210mm; margin: 0 auto; padding: 20mm; }
+  }
+
+  /* ========== HEADER ========== */
+  .header {
+    margin-bottom: 14pt;
+    padding-bottom: 12pt;
+    border-bottom: 0.8pt solid var(--border);
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 20pt;
+  }
+  .title-block {
+    flex: 1;
+  }
+  .eyebrow {
+    font-size: 9pt;
+    color: var(--brand);
+    letter-spacing: 1.5pt;
+    text-transform: uppercase;
+    margin-bottom: 6pt;
+    font-weight: 500;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-size: 21pt;
+    font-weight: 500;
+    color: var(--near-black);
+    line-height: 1.25;
+    margin-bottom: 6pt;
+  }
+  .subtitle {
+    font-size: 10.5pt;
+    color: var(--olive);
+    line-height: 1.4;
+  }
+  .meta {
+    font-size: 8.5pt;
+    color: var(--stone);
+    text-align: right;
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+
+  /* ========== METRICS ========== */
+  .metrics {
+    display: flex;
+    gap: 16pt;
+    margin-bottom: 16pt;
+    padding: 6pt 0 8pt 0;
+    border-bottom: 0.6pt dotted var(--border);
+  }
+  .metric {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2pt;
+  }
+  .metric-value {
+    font-family: var(--serif);
+    font-size: 17pt;
+    font-weight: 500;
+    color: var(--brand);
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+  .metric-label {
+    font-size: 8pt;
+    color: var(--olive);
+    line-height: 1.3;
+  }
+
+  /* ========== LEAD ========== */
+  .lead {
+    font-size: 10.5pt;
+    line-height: 1.6;
+    color: var(--dark-warm);
+    margin-bottom: 16pt;
+    padding: 9pt 13pt;
+    background: var(--ivory);
+    border-left: 2.5pt solid var(--brand);
+    border-radius: 2pt;
+  }
+  .hl {
+    color: var(--brand);
+    font-weight: 500;
+  }
+
+  /* ========== TWO COLUMNS ========== */
+  .two-col {
+    display: flex;
+    gap: 18pt;
+    margin-bottom: 14pt;
+  }
+  .two-col section {
+    flex: 1;
+  }
+  h2 {
+    font-size: 11.5pt;
+    font-weight: 500;
+    color: var(--near-black);
+    margin-bottom: 7pt;
+    padding-bottom: 4pt;
+    border-bottom: 0.5pt solid var(--border);
+  }
+  ul.dash {
+    list-style: none;
+    padding-left: 0;
+  }
+  ul.dash li {
+    position: relative;
+    padding-left: 11pt;
+    margin-bottom: 5pt;
+    font-size: 9.5pt;
+    color: var(--dark-warm);
+    line-height: 1.48;
+  }
+  ul.dash li::before {
+    content: "—";
+    position: absolute;
+    left: 0;
+    color: var(--stone);
+  }
+
+  /* ========== CALLOUT ========== */
+  .callout {
+    background: var(--ivory);
+    border: 0.8pt solid var(--border);
+    border-left: 3pt solid var(--brand);
+    padding: 10pt 13pt;
+    margin-bottom: 14pt;
+    border-radius: 2pt;
+  }
+  .callout-title {
+    font-size: 10.5pt;
+    font-weight: 500;
+    color: var(--brand);
+    margin-bottom: 5pt;
+  }
+  .callout p {
+    font-size: 9.8pt;
+    margin-bottom: 0;
+    line-height: 1.5;
+    color: var(--dark-warm);
+  }
+
+  /* ========== WISHES & FOLLOW ========== */
+  .action-block {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8pt 12pt;
+    background: transparent;
+    border-top: 0.5pt solid var(--border);
+    border-bottom: 0.5pt solid var(--border);
+    margin-bottom: 12pt;
+  }
+  .wish {
+    font-size: 10.5pt;
+    font-weight: 500;
+    color: var(--brand);
+    letter-spacing: 0.5pt;
+  }
+  .notice {
+    font-size: 8.5pt;
+    color: var(--olive);
+    text-align: right;
+    line-height: 1.35;
+  }
+
+  /* ========== FOOTER ========== */
+  .footer {
+    margin-top: 8pt;
+    padding-top: 6pt;
+    border-top: 0.4pt dotted var(--border);
+    font-size: 8pt;
+    color: var(--stone);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== HEADER ========== -->
+<div class="header">
+  <div class="title-block">
+    <div class="eyebrow">{{EYEBROW}}</div>
+    <h1>{{TITLE}}</h1>
+    <div class="subtitle">{{SUBTITLE}}</div>
+  </div>
+  <div class="meta">
+    日期：{{DATE_STR}}<br>
+    时点：{{TIME_STR}}
+  </div>
+</div>
+
+<!-- ========== METRICS ========== -->
+<div class="metrics">
+  <div class="metric">
+    <div class="metric-value">{{METRIC_1_VAL}}</div>
+    <div class="metric-label">{{METRIC_1_LBL}}</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">{{METRIC_2_VAL}}</div>
+    <div class="metric-label">{{METRIC_2_LBL}}</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">{{METRIC_3_VAL}}</div>
+    <div class="metric-label">{{METRIC_3_LBL}}</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">{{METRIC_4_VAL}}</div>
+    <div class="metric-label">{{METRIC_4_LBL}}</div>
+  </div>
+</div>
+
+<!-- ========== LEAD ========== -->
+<p class="lead">
+  {{LEAD_CONTENT}}
+</p>
+
+<!-- ========== TWO COLUMNS ========== -->
+<div class="two-col">
+  <section>
+    <h2>{{COL1_TITLE}}</h2>
+    <ul class="dash">
+      {{COL1_ITEMS}}
+    </ul>
+  </section>
+
+  <section>
+    <h2>{{COL2_TITLE}}</h2>
+    <ul class="dash">
+      {{COL2_ITEMS}}
+    </ul>
+  </section>
+</div>
+
+<!-- ========== CALLOUT 策略核心 ========== -->
+<div class="callout">
+  <div class="callout-title">{{CALLOUT_TITLE}}</div>
+  <p>
+    {{CALLOUT_CONTENT}}
+  </p>
+</div>
+
+<!-- ========== WISHES & FOLLOW ========== -->
+<div class="action-block">
+  <div class="wish">{{WISH_TEXT}}</div>
+  <div class="notice">
+    为了让大家更好提前跟上节奏，文章争取每个交易日14:30前发出<br>
+    记得看完“点赞+关注”，以防后面文章发出，通知不到你
+  </div>
+</div>
+
+<!-- ========== FOOTER ========== -->
+<div class="footer">
+  <span>投资有风险，入市需谨慎</span>
+  <span>市场策略研究 · 内部交流参考</span>
+</div>
+
+</body>
+</html>

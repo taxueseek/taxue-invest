@@ -26,10 +26,14 @@ from __future__ import annotations
 
 from ._http import guarded_open
 
+# 运行期依赖声明（route.candidates 缺件摘链用，写 import 名而非 pip 名）：
+# ed25519 签名用的 cryptography 在函数内延迟 import，缺件解释器上适配器
+# 本体照样可导入，不声明就会排进 fund 链头、fetch 时才炸。
+REQUIRED_IMPORTS = ("cryptography",)
+
 import base64
 import hashlib
 import json
-import os
 import subprocess
 import sys
 import time
@@ -38,7 +42,7 @@ import urllib.request
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 SOURCE_LABEL = "天天基金"
 
@@ -540,7 +544,6 @@ def nav_series(code: str, begin: str = "") -> dict[str, Any]:
     改为：缓存**过滤前**的全量序列，切片每次现做。缓存语义与键重新对齐，
     这一类「键缺参数」的 bug 就不存在了。
     """
-    from datetime import date, timedelta
 
     from _common import CACHE_TTL_FUNDAMENTAL, cache_get, cache_set
 

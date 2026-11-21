@@ -57,7 +57,7 @@ def test_screen_defaults_to_eastmoney() -> None:
     d = _dispatch("screen", "市盈率低于10的银行股")
     assert d["route"][0] == "eastmoney_screen"
     d2 = _dispatch("screen", "夏普大于1的基金")
-    assert d2["route"][0] == "yingmi"
+    assert d2["route"][0] == "fund_screen"
 
 
 def test_cjk_name_is_not_a_us_ticker() -> None:
@@ -143,8 +143,76 @@ def test_yingmi_fuzzy_match_must_correspond_to_query(monkeypatch) -> None:
     assert m._is_fund_by_yingmi("中欧医疗健康") is True
 
 
+def test_classify_supports_class_share_tickers() -> None:
+    """BRK.B / BRK-B / BF.B 类美股代码必须判为 us，不能掉进 A/H 股链。"""
+    for ticker in ("BRK.B", "BRK-B", "BF.B"):
+        assert classify(ticker) == "us", ticker
+    assert classify("茅台") == "stock"
+
+
+def test_macro_region_routing_avoids_us_cn_mismatch(monkeypatch) -> None:
+    """v3.8：美国流动性不得兜底到中国统计局，中国宏观不得走美联储 FRED。"""
+    import cmd_intent as m
+    from sources import argo as argo_src, fred as fred_src, registry as reg_mod
+
+    assert m._is_cn_macro("中国 CPI 社融") is True
+    assert m._is_cn_macro("美联储 缩表 SOFR") is False
+    assert m._is_cn_macro("") is False
+
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(reg_mod, "detect", lambda conf: (False, "off"))
+    monkeypatch.setattr(fred_src, "liquidity", lambda: {"ok": False, "data": None, "error": "down"})
+    monkeypatch.setattr(
+        argo_src,
+        "search",
+        lambda q, engine="": (seen.append((engine, q)), {"ok": True, "source": "argo", "data": []})[1],
+    )
+
+    m._macro_pipeline("美联储 流动性")
+    m._macro_pipeline("中国 社融 M2")
+    assert seen[0][0] == "macro", "美国宏观失败不得兜底到 nbs_stats"
+    assert seen[1][0] == "nbs_stats", "中国宏观应走 nbs_stats"
+
+
+def test_bond_deep_falls_back_to_mxds_when_wind_unavailable(monkeypatch) -> None:
+    """v3.8：无 Wind Key 时债券深取应自动降级到 mxds，而非单点硬死。"""
+    import cmd_intent as m
+    from sources import mxds as mxds_src, registry as reg_mod
+
+    def fake_detect(conf):
+        if conf.get("env_var") == "WIND_API_KEY":
+            return False, "no wind"
+        if conf.get("env_var") == "EM_API_KEY":
+            return True, "ok"
+        return False, "off"
+
+    monkeypatch.setattr(reg_mod, "detect", fake_detect)
+    monkeypatch.setattr(mxds_src, "bond", lambda q: {"ok": True, "source": "mxds", "data": {"q": q}})
+    res = m._bond_with_fallback("113050")
+    assert res["ok"] is True
+    assert res["source"] == "mxds"
+    assert res["fallback_from"] == "wind"
+
+
+def test_fund_screen_prefers_sfg_and_falls_back_to_yingmi(monkeypatch) -> None:
+    """v3.8：基金筛选 sfg 主路，sfg 不可用时降级盈米 SearchFunds。"""
+    import cmd_intent as m
+    from sources import registry as reg_mod, sfg as sfg_src, yingmi as ym_src
+
+    monkeypatch.setattr(reg_mod, "detect", lambda conf: (conf.get("env_var") == "SFG_MCP_TOKEN", ""))
+    monkeypatch.setattr(sfg_src, "call", lambda tool, params=None, **k: {"ok": True, "source": "sfg", "kind": tool, "data": []})
+    res_sfg = m._fund_screen_with_fallback("夏普大于1的基金")
+    assert res_sfg["source"] == "sfg" and res_sfg["kind"] == "sfg_screen_funds"
+
+    monkeypatch.setattr(reg_mod, "detect", lambda conf: (False, "off"))
+    monkeypatch.setattr(ym_src, "call", lambda tool, params=None: {"ok": True, "source": "yingmi", "kind": tool, "data": []})
+    res_ym = m._fund_screen_with_fallback("红利主题基金")
+    assert res_ym["source"] == "yingmi" and res_ym["kind"] == "SearchFunds"
+
+
 if __name__ == "__main__":
     test_kind_from_code()
     test_classify_does_not_call_yingmi_for_shanghai()
     test_screen_defaults_to_eastmoney()
+    test_classify_supports_class_share_tickers()
     print("test_intent: OK")

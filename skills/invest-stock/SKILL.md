@@ -36,9 +36,16 @@ description: |
 **统一走 mx-data 数据层**，不直接调用 API：
 
 ```bash
-# 取股票数据
-python3 ~/.agents/skills/mx-data/scripts/get_data.py --type stock --code <代码> --metrics ["ROE","PE","revenue","net_profit"]
+# <mx-data> = mx-data 技能安装目录（与本技能同批安装，路径随安装器而定）
+# 取股票数据（A股/港股）
+python3 <mx-data>/scripts/get_data.py --type stock --code <代码> --metrics ["ROE","PE","revenue","net_profit"]
+
+# 美股：--type us，或 --type stock + 字母代码（自动识别为美股，不会走 A 股链）
+python3 <mx-data>/scripts/get_data.py --type us --code AAPL
 ```
+
+- `--metrics` 只回传、不过滤；字段取不到就标 `N/A`，**不要估算填充**（与 `references/comps-analysis.md` 的缺失值纪律一致）。
+- 用系统 `python3` 启动时脚本会自愈进 invest-cli 的 venv（美股依赖 yfinance）；`runtime` 字段可核对。
 
 取数后按下方方法论分析，不暴露数据源细节给用户。
 
@@ -145,7 +152,7 @@ python3 ~/.agents/skills/mx-data/scripts/get_data.py --type stock --code <代码
 
 ## 模式 3：机构深度
 
-详见 `~/.agents/skills/invest-stock/references/deep-dive.md`，按需读取。
+详见本技能 `references/deep-dive.md`，按需读取。
 
 ## 输出模板
 

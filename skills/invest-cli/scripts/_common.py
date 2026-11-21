@@ -49,15 +49,6 @@ def secret_from_file(name: str) -> str:
     return ""
 
 
-def eastmoney_api_key(explicit: Optional[str] = None) -> str:
-    """东财 API key：显式参数 > 环境变量 > ~/.env.secrets"""
-    key = explicit or secret_from_file("EASTMONEY_APIKEY")
-    if not key:
-        raise RuntimeError(
-            "缺少 EASTMONEY_APIKEY（应放在 ~/.env.secrets，或经环境变量传入）")
-    return key
-
-
 def ensure_script_dir_on_path() -> Path:
     """Make sibling modules importable regardless of process cwd."""
     script_dir = Path(__file__).resolve().parent
@@ -120,6 +111,13 @@ def find_invest_cli() -> Path:
         "invest_cli.py not found. Set INVEST_CLI or INVEST_CLI_ROOT, "
         "or install invest-cli under a standard skills directory."
     )
+
+
+# ── L2 查询缓存：已删除（实测零收益的死代码）───────────────────────────────
+# 2026-10-15 在这里加了进程内 l2_cache_get/l2_cache_set（10s TTL），理由是「一次
+# 研究任务里同一标的的 quote 会重复出现」。实测不成立：CLI 每进程只跑一条命令，
+# 唯一调用方 cmd_quote.run 在进程内只被调用一次，命中率为 0。相比跨进程缓存
+# （下面这组 cache_*）它一分不省，只多一个内存字典与一套淘汰逻辑，已删除。
 
 
 def json_out(data: Any, *, indent: bool = True) -> str:
@@ -196,6 +194,19 @@ def looks_like_hk(keyword: str) -> bool:
     return t.upper().endswith(".HK")
 
 
+_US_TICKER_RE = re.compile(r"^[A-Za-z]{1,5}(?:[.\-][A-Za-z]{1,4})?$")
+
+
+def looks_like_us_ticker(value: str) -> bool:
+    """入参是否像美股 ticker（1–5 位纯字母，或带 .B / -B 类别后缀如 BRK.B）。
+
+    与 mx-data/query_router 同一口径；中文字符在 Python 里 isalpha() 为 True，
+    因此必须要求 ASCII，避免把「茅台」「腾讯」判成美股代码。
+    """
+    v = (value or "").strip()
+    return bool(v) and v.isascii() and bool(_US_TICKER_RE.match(v))
+
+
 def pick_screen_columns(all_keys: list[str], limit: int = 6) -> list[str]:
     """Pick display columns without hardcoding dated header strings."""
     # 股息率排第 5：股息率筛选（妙想实测榜单整列都是它）连本列都不显示就
@@ -251,16 +262,18 @@ _CACHE_PRUNED: set[str] = set()
 
 
 def cache_root() -> Path:
-    """invest-cli 缓存根目录（尊重 XDG/平台惯例，不硬编码个人路径）。"""
+    """invest-cli 缓存根目录（尊重 XDG/平台惯例，不硬编码个人路径）。
+
+    纯路径计算，不创建目录：本函数也被所有**读**路径调用（cache_get、
+    registry 探测负缓存查表），读一个尚不存在的缓存不该产生写副作用。
+    目录由写路径负责创建（cache_path(..., create=True) / sec_edgar.cache_dir）。
+    """
     env = os.environ.get("INVEST_CLI_CACHE_DIR", "").strip()
     if env:
-        base = Path(env).expanduser().resolve()
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Caches" / "invest-cli"
-    else:
-        base = Path.home() / ".cache" / "invest-cli"
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+        return Path(env).expanduser().resolve()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "invest-cli"
+    return Path.home() / ".cache" / "invest-cli"
 
 
 def state_root() -> Path:
@@ -276,17 +289,22 @@ def state_root() -> Path:
     return base
 
 
-def cache_path(namespace: str, key: str) -> Path:
-    """按命名空间 + 键定位缓存文件（键做散列，避免非法文件名字符）。"""
+def cache_path(namespace: str, key: str, *, create: bool = True) -> Path:
+    """按命名空间 + 键定位缓存文件（键做散列，避免非法文件名字符）。
+
+    create=False 供**读**路径使用：一次缓存未命中不该顺手建出目录树。
+    写路径（cache_set、registry 探测负缓存落盘）保持默认 create=True。
+    """
     digest = hashlib.sha256(str(key).encode("utf-8")).hexdigest()[:32]
     ns_dir = cache_root() / namespace
-    ns_dir.mkdir(parents=True, exist_ok=True)
+    if create:
+        ns_dir.mkdir(parents=True, exist_ok=True)
     return ns_dir / f"{digest}.json"
 
 
 def cache_get(namespace: str, key: str, ttl: float) -> Optional[Any]:
     """读缓存；未命中/过期/损坏一律返回 None（调用方按未命中处理）。"""
-    path = cache_path(namespace, key)
+    path = cache_path(namespace, key, create=False)
     try:
         if not path.is_file():
             return None
@@ -342,6 +360,252 @@ def cache_set(namespace: str, key: str, value: Any) -> None:
     except (OSError, TypeError, ValueError):
         return
     _prune_namespace(path.parent)
+
+
+# ═══ 运行时事实层（usage log，单真源）═══
+#
+# 为什么需要：这个项目跨 9 轮治理反复出问题的两类根因——「判据/路由漂移」
+# 与「门禁/守卫假通过」——有一个共同的盲区：651 条测试全是**静态猜**
+# （AST、正则、体积、F401），没有任何一条记录「运行时到底发生了什么」。
+# 于是某源配额打满连续失败 8 次、降级链被过度触发、慢源长期拖累，都只能
+# 靠用户肉眼或事后写复盘报告发现。Argo 的 usage_log 正是补这一层。
+#
+# 纪律（开发做减法）：
+#   - 只有「追加一条」与「读最近 N 条」两个操作，不做平台；
+#   - 落盘复用 state_root()（用户态数据，与可删的 cache_root 严格分开），
+#     测试已被 conftest 的 INVEST_CLI_STATE_DIR 自动隔离，不新增夹具；
+#   - 与 cache_set 同一套原子写 + pid 临时名 + 失败静默，不引入第二套实现；
+#   - 总开关 INVEST_CLI_USAGE_LOG=0 完全关闭（测试与隐私敏感场景）。
+#
+# 写入点只有一个：sources/route.py 的 fetch()（真实取数唯一入口）。
+# 消费者是 doctor / stats / 插件诊断视图，都只读这份账本，不另建平行日志。
+
+USAGE_LOG_MAX_BYTES = 1024 * 1024   # 单流 1 MiB
+USAGE_LOG_KEEP_LINES = 2000         # 超限回缩保留最近 2000 行
+USAGE_LOG_STREAM = "calls"          # 唯一流：一次取数一条
+
+
+def usage_log_dir() -> Path:
+    """账本目录。env 覆盖优先（与 cache_root/state_root 同一约定）。"""
+    env = os.environ.get("INVEST_CLI_USAGE_LOG_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    return state_root() / "usage_log"
+
+
+def _usage_enabled() -> bool:
+    raw = os.environ.get("INVEST_CLI_USAGE_LOG", "").strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
+
+def usage_emit(record: dict[str, Any]) -> bool:
+    """追加一条运行时事实到 usage_log/calls.jsonl；失败静默，绝不拖累取数。
+
+    记录内自动补 ts / version。不做字段校验：写入方（route.fetch）是唯一
+    生产者，形状由它保证；多一层校验只会让「事实」变成「被猜过的东西」。
+    """
+    if not _usage_enabled():
+        return False
+    try:
+        from datetime import datetime
+
+        d = usage_log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{USAGE_LOG_STREAM}.jsonl"
+        line = json.dumps(
+            {"ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+             "version": 1, **record},
+            ensure_ascii=False,
+        )
+        # 回缩与追加在同一进程内串行完成；CLI 每进程一条命令，跨进程并发
+        # 写同一个流文件时，回缩走带 pid 的原子替换不会截断别人的追加。
+        try:
+            if path.is_file() and path.stat().st_size > USAGE_LOG_MAX_BYTES:
+                keep = path.read_text(encoding="utf-8").splitlines()[-USAGE_LOG_KEEP_LINES:]
+                tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+                tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
+                tmp.replace(path)
+        except (OSError, ValueError):
+            pass
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def usage_tail(n: int = 200) -> list[dict[str, Any]]:
+    """读最近 n 条事实；文件不存在/损坏返回空列表（读侧永不抛异常）。"""
+    try:
+        path = usage_log_dir() / f"{USAGE_LOG_STREAM}.jsonl"
+        if not path.is_file():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()[-n:]
+        out: list[dict[str, Any]] = []
+        for x in lines:
+            if not x.strip():
+                continue
+            try:
+                row = json.loads(x)
+            except ValueError:
+                continue  # 半行（进程被杀）不该让整本账作废
+            if isinstance(row, dict):
+                out.append(row)
+        return out
+    except OSError:
+        return []
+
+
+def usage_stats(hours: float = 24.0) -> dict[str, Any]:
+    """最近 N 小时账本汇总；源级、直取级与命令级分开统计。
+
+    这是唯一的聚合点：doctor 与 datasources 都读它，避免两处各写一遍时间窗、
+    连续失败与归因逻辑。读侧永不抛异常。
+
+    记录分三类，靠 `scope` 区分：
+      - 源级（scope 缺省）：route.fetch 记录真实取数与降级链，键是 `kind`；
+      - 直取级（scope="direct"）：直取命令记录绕开 route 的源调用，键是 `src`；
+      - 命令级（scope="cmd"）：CLI 入口记录每次命令的 rc 与耗时，键是 `cmd`。
+    """
+    from datetime import datetime
+
+    records = usage_tail(2000)
+    now = datetime.now().astimezone()
+    recent: list[dict[str, Any]] = []
+    for r in records:
+        try:
+            ts = datetime.fromisoformat(str(r.get("ts")))
+            age = (now - ts).total_seconds()
+        except (TypeError, ValueError):
+            continue
+        if age <= hours * 3600:
+            recent.append(r)
+    source_rows = [r for r in recent if r.get("scope") not in ("cmd", "direct")]
+    return {
+        "window_hours": hours,
+        "records": len(records),
+        "source": _usage_bucket(source_rows, "kind"),
+        "direct": _usage_bucket(
+            [r for r in recent if r.get("scope") == "direct"], "src"
+        ),
+        "cmd": _usage_bucket([r for r in recent if r.get("scope") == "cmd"], "cmd"),
+        # 空结果基线破位（P3）：健康引擎「突然一直空」是失效信号。
+        # 判据三要素（见 sources/envelope.py 的 STALE_* 常量）：
+        #   历史曾非空 + 近期连续空 ≥N + 跨 ≥M 个不同查询
+        # 从未成功过的源不受影响（无基线可破）。
+        "suspected_stale": _suspected_stale(source_rows),
+    }
+
+
+def _suspected_stale(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """按源判定 suspected_stale（空结果基线破位）。
+
+    与 argo 的 engine_health.suspected_stale 同构，但**只读账本、零新增请求**：
+    每次真实取数已经把成败与交付条数落盘，判据是这些事实的纯函数。
+
+    判定口径：
+      - 该源在窗口内**从未交付过非空结果**（无基线）→ 不判（可能是新源/新凭据）；
+      - 历史上交付过非空，但最近连续 ≥STALE_MIN_CONSECUTIVE_EMPTY 次空，
+        且这些空结果跨 ≥STALE_MIN_DISTINCT_QUERIES 个不同查询 → suspected_stale。
+    返回 {source: {"consecutive_empty": n, "distinct_queries": m, "last_nonempty": ts}}。
+    """
+    from sources.envelope import (
+        STALE_MIN_CONSECUTIVE_EMPTY,
+        STALE_MIN_DISTINCT_QUERIES,
+    )
+
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        if not r.get("ok"):
+            continue
+        sid = str(r.get("source") or "")
+        if not sid:
+            continue
+        by_source.setdefault(sid, []).append(r)
+
+    out: dict[str, dict[str, Any]] = {}
+    for sid, rs in by_source.items():
+        # 最近连续空（从最新往回数，遇到非空即停）。
+        consecutive = 0
+        queries: set[str] = set()
+        for r in reversed(rs):
+            if r.get("empty") or r.get("count") == 0:
+                consecutive += 1
+                queries.add(str(r.get("arg") or ""))
+            else:
+                break
+        if consecutive < STALE_MIN_CONSECUTIVE_EMPTY:
+            continue
+        if len(queries) < STALE_MIN_DISTINCT_QUERIES:
+            continue
+        # 必须曾经非空（有基线可破）。
+        if not any(not (r.get("empty") or r.get("count") == 0) for r in rs):
+            continue
+        last_nonempty = next(
+            (str(r.get("ts")) for r in rs
+             if not (r.get("empty") or r.get("count") == 0)),
+            None,
+        )
+        out[sid] = {
+            "consecutive_empty": consecutive,
+            "distinct_queries": len(queries),
+            "last_nonempty": last_nonempty,
+        }
+    return out
+
+
+def _usage_bucket(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    """一组记录的成败/降级/尾部连续失败/逐源归因/交付条数（P2）。
+
+    交付条数按源聚合：回答「这个源这 24h 交付了多少条数据」，与耗时配对后
+    才能区分「慢源拖尾」与「唯一出货」（argo engine_results 同构）。
+    空结果数（ok=True 但 count=0）单列，是 suspected_stale 的判据基础（P3）。
+    """
+    total = len(rows)
+    ok = sum(1 for r in rows if r.get("ok"))
+    fallback = sum(1 for r in rows if r.get("fallback_from"))
+    consecutive: dict[str, int] = {}
+    for r in reversed(rows):
+        if r.get("ok"):
+            break
+        name = str(r.get(key) or "?")
+        consecutive[name] = consecutive.get(name, 0) + 1
+    by_source: dict[str, int] = {}
+    fallback_failed: dict[str, int] = {}
+    for r in rows:
+        for sid in (r.get("failed_sources") or []):
+            s = str(sid).strip()
+            if s:
+                fallback_failed[s] = fallback_failed.get(s, 0) + 1
+        if r.get("ok"):
+            continue
+        for msg in r.get("errors") or []:
+            sid = str(msg).split(":", 1)[0].strip()
+            if sid.isidentifier():
+                by_source[sid] = by_source.get(sid, 0) + 1
+    # 交付条数与空结果（仅成功记录有 count；失败记录不计入分母）。
+    delivered: dict[str, int] = {}
+    empty: dict[str, int] = {}
+    for r in rows:
+        if not r.get("ok"):
+            continue
+        name = str(r.get("source") or r.get(key) or "?")
+        n = r.get("count")
+        if isinstance(n, int) and n >= 0:
+            delivered[name] = delivered.get(name, 0) + n
+        if r.get("empty"):
+            empty[name] = empty.get(name, 0) + 1
+    return {
+        "total": total,
+        "ok": ok,
+        "failed": total - ok,
+        "fallback": fallback,
+        "consecutive": consecutive,
+        "by_source": by_source,
+        "fallback_failed": fallback_failed,
+        "delivered": delivered,
+        "empty": empty,
+    }
 
 
 # 【已删除】parallel_execute / query_eastmoney_parallel / eastmoney_query_with_cache

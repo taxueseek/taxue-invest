@@ -1,10 +1,14 @@
-# Optional local venv for invest-cli (esp. `us` via yfinance)
-# 注意：PyYAML 为硬依赖（scripts/sources/__init__.py 解析 data-sources.yaml），
-# 此前缺失会导致 venv 方案下 datasources 等命令直接 ModuleNotFoundError。
-requests>=2.28
+# invest-cli 运行期依赖（pip 用户的可读清单）
+#
+# ⚠️ 本文件是**派生清单**，不是依赖真源。真源在 pyproject.toml 的
+#    [project].dependencies；内容与它的对应关系由
+#    scripts/test_dependency_source_gate.py 机械对账，漂移即红。
+#    改依赖请改 pyproject.toml，再跑：
+#        python3 scripts/sync_requirements.py
+#
+# 本清单给「不用 uv 的 pip 用户」直接 `pip install -r requirements.txt`；
+# 本机 venv（skill 自带 .venv 软链）与 CI 走 uv，见 .python-version。
+
 PyYAML>=6.0
 yfinance>=0.2
-# 天天基金直连 gateway 的 ed25519 签名（官方同一套认证逻辑）
 cryptography>=41.0
-# 可选：`invest-cli tenure --excel` 导出 xlsx 用（缺失时自动落 CSV，不影响取数）
-openpyxl>=3.1

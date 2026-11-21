@@ -21,8 +21,6 @@ from __future__ import annotations
 import json
 import sys
 
-from sources import argo as argo_src
-from sources import westock
 
 # 子命令 → (westock 命令前缀, kind, 默认条数)
 _SPECS: dict[str, tuple[list[str], str]] = {
@@ -51,6 +49,7 @@ def _parse_output(text: str) -> dict:
 
 
 def _westock_envelope(action: str, args: list[str]) -> dict:
+    from sources import westock
     res = westock.call(args)
     if not res.get("ok"):
         return {"source": "westock", "kind": _SPECS[action][1], "ok": False,
@@ -93,6 +92,7 @@ def _notice_via_argo(code: str, limit: int) -> dict:
     原始输入当检索词。结果条数少于 westock 列表（是检索不是清单），
     所以在 note 里写明来源与局限。
     """
+    from sources import argo as argo_src
     from sources import tencent
 
     name = code
@@ -112,6 +112,9 @@ def _notice_via_argo(code: str, limit: int) -> dict:
 
 def run(action: str, targets: list[str], as_json: bool = False, search: str = "",
         notice_type: str = "", limit: int = 0, offset: int = 0) -> int:
+    from sources import argo as argo_src
+    from sources import westock
+
     if action not in _SPECS:
         print(f"未知子命令: {action}（可选: {'/'.join(_SPECS)}）", file=sys.stderr)
         return 1

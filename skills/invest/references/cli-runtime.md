@@ -2,7 +2,7 @@
 
 一行原则：**PATH 优先，skill 树兜底；禁止写死个人家目录。**
 
-（本文件无 SKILL.md 引用过，2026-09-22 起由 `invest/SKILL.md` 的「维护」段指向，以免成为孤儿文档。下面带「已作废」标记的表只作存档。） 取数口径以 invest 入口「场景 → invest-cli 取数映射」表为真源，本文件只管运行时解析与外部分工。
+取数口径以 `invest/SKILL.md` 的「场景 → invest-cli 取数映射」表为真源；可用性以 `invest-cli datasources` 的运行时探测为准。本文件只管运行时解析与外部分工。
 
 ## 解析顺序
 
@@ -29,47 +29,13 @@ invest-cli 是唯一数据入口。它对外部技能的依赖只允许两类的
 
 不外接任何「分析技能」当取数依赖。ttfund / fundfof / fundscreen 已退役（2026-09-03，能力并入官方 ttskill 业务包与 invest-cli `intent`），不作为活性依赖。
 
-## 数据源分工（单一优先级，消灭双入口掷骰）
+## 历史快照已删除（2026-10-17）
 
-> **本表已作废（2026-09-22）**。取数分工的唯一真源是 `../SKILL.md` 的
-> 「场景 → invest-cli 取数映射」表；本表是它的第三份副本，已漂移
-> （例如「宏观 → argo」实际是 FRED 净流动性优先、argo 仅作降级）。
-> 原文保留仅作历史存档，**不要据此路由**。
-
-| 意图 | 命令 | 运行时链（依本机可用性） |
-|------|------|------------------------|
-| 个股三关快照（A股） | `invest-cli stock` | hithink > eastmoney |
-| 个股三关快照（港股） | `invest-cli stock` | eastmoney（当前机器缺 key 则空链） |
-| 美股快照 | `invest-cli us` | yfinance > tencent > bitget |
-| 基金三关快照 | `invest-cli fund` | hithink > [ttskill 深取] > eastmoney |
-| 基金诊断雷达 | `intent deep fund` | yingmi GetFundDiagnosis |
-| 债券 | `intent deep bond` | wind bond_data |
-| 黄金/商品 | `intent deep commodity` | ttskill 官方 TTFUND_GOLD_INFO |
-| 宏观/市场 | `intent macro` | argo |
-| 组合/配置 | `intent portfolio` / `intent plan` | yingmi |
-| 自然语言选股 | `intent screen` / `invest-cli screen` | eastmoney（当前机器缺 key 则空链） |
-| 资讯/舆情检索 | `invest-cli info` | argo |
-| HTML 报告摘要 | `intent present` | 本地提取 |
-
-> 链以 `invest-cli datasources` 运行时探测为准；空链 = 该场景当前机器无可用源，属外部登录态缺口，不是代码缺陷。
-
-## 数据源可用性（运行时，2026-09 实测）
-
-> **本表已作废（2026-09-22）**。它是某台机器在某一时刻的快照，已与运行态相反
-> （例：写「eastmoney 缺 key，当前空链」，实际已配；写 wind 依赖 wind-mcp-skill
-> 目录，实际直连 MCP 不需要它）。可用性以 `invest-cli datasources` 的**运行时探测**
-> 为准，不要读这张表。原文保留仅作历史存档。
-
-| 源 | 状态 | 依赖 |
-|----|------|------|
-| hithink 同花顺 | 可用 | `HITHINK_FINANCE_API_KEY` 或用户级 credentials |
-| eastmoney 东财 | 缺 key（当前空链：港股/选股） | `EASTMONEY_APIKEY` |
-| yfinance | 可用 | 已装 `yfinance` |
-| bitget | 可用 | 免 key 公开 API |
-| wind | 可用 | wind-mcp-skill 目录 + key |
-| yingmi | 可用 | `yingmi-skill-cli init` 完成 |
-| ttskill | 可用 | 已登录 |
-| argo | 可用 | argo skill 目录含 `scripts/search.py` |
+这里曾有两张表：一份「数据源分工」、一份「某机可用性快照」。两张都标了「已作废」
+却仍占 40 行——而投资 agent 读文件是整段读的，作废表一样会被当成事实。
+它们的共同问题是**同一事实的第三份副本**（真源分别是 `invest/SKILL.md` 的场景表和
+`invest-cli datasources` 的运行时探测），且已经漂移（写「债券 → mxds」，实际走 Wind）。
+需要考古看 git 历史；日常只认上面两个真源。
 
 ## 模糊词默认
 

@@ -83,6 +83,24 @@ def test_call_falls_back_to_initialize(monkeypatch) -> None:
     assert seen == ["tools/call", "initialize", "tools/call"]
 
 
+def test_paired_rejects_length_mismatch() -> None:
+    """列名与值数不一致必须报错，而不是静默截断到较短的一侧。
+
+    静默截断的后果：列名少一个，后面的值整体左移一位，「基金成立日」拿到
+    「基金经理」的值，rc=0、无任何信号。三个取数点（档案/年度/区间）共用
+    这个配对，一处修全覆盖。
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match="拒绝配对以免字段错位"):
+        wind._paired(["a", "b"], ["1"], "基金档案")
+
+
+def test_paired_passes_matching_lengths() -> None:
+    """等长时正常配对——守卫不能反过来把好数据拦掉。"""
+    assert wind._paired(["a", "b"], ["1", "2"], "x") == [("a", "1"), ("b", "2")]
+
+
 def test_call_reports_rpc_error(monkeypatch) -> None:
     monkeypatch.setattr(wind, "_api_key", lambda: "k")
 

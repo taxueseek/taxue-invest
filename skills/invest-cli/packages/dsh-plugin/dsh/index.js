@@ -1,17 +1,21 @@
 /*
- * @taxueseek/invest-cli-dsh — 把 invest-cli 收敛成**单个** invest 工具。
+ * @taxueseek/invest-cli-dsh — 把 invest-cli 收敛成单个 invest 工具，并提供可视化配置与诊断。
  *
- * 形态选择：单入口 + CLI 单发（不是 21 个具名工具，也不挂 MCP）。
+ * 形态选择：单入口 + CLI 单发（不是每个子命令一个具名工具，也不挂 MCP）。
  *   · 工具定义（名称+描述+schema）每轮请求都注入上下文且压缩清不掉；
- *     21 个具名工具 ≈4K token/轮 的常驻开销，而本 CLI 的调用面是**平摊**的
+ *     逐个具名工具 ≈4.5K token/轮 的常驻开销，而本 CLI 的调用面是平摊的
  *     （会话日志实测 top5 是 stock/sec/us/cn/tenure，各占 6–9%），没有哪条
  *     够格做「专属工具」；
- *   · 单入口把常驻开销压到 ≈0.5K/轮，能力面一个不少（21 子命令全可达）。
+ *   · 单入口把常驻开销压到 ≈0.5K/轮，能力面一个不少（全部子命令可达）。
  *   与 Argo 的取舍同源（那边是 2 个原生工具 + MCP 默认关）。
  *
- * 无 @deepseek-ai/* 依赖：只用公开的 ctx.tools / ctx.systemPrompt（与 argo-dsh 同）。
+ * 参照 Argo 体系设计：
+ *   · 统一配置规范与 Schemastery schema（可选依赖，运行时优雅降级）
+ *   · 原生可视化设置页（运行看板 / 接入与执行 / 命令与预算 / 数据源拓扑 / API 凭据 / 高级调优）
+ *   · safeClip 守卫：超预算返回合法信封与恢复提示，绝不向模型投喂残缺损坏的坏 JSON
+ *   · 多级超时分档与大结果专用预算（tenure/report/sec 等慢命令保护）
  *
- * 真源不变：CLI 脚本仍是唯一实现，本插件只做「参数校验 + 有界超时 + 截断」。
+ * 真源不变：CLI 脚本仍是唯一实现，本插件负责「参数校验 + 动态预算 + 安全截断 + 可视化治理」。
  */
 
 import { spawn } from 'node:child_process'
@@ -19,50 +23,108 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { REGISTRY } from './registry.generated.js'
 
 /** Cordis 插件名 —— 必须与 cordis.patch.yml 里的行 id 一致。 */
 export const name = 'invest-cli'
 
-/** 只依赖 tools；systemPrompt 是可选增强，缺席时跳过（headless 也能加载）。 */
+/** 依赖 tools；systemPrompt 为可选增强，缺席时跳过（headless 环境亦可加载）。 */
 export const inject = ['tools']
 
 const text = (value) => [{ type: 'text', text: value }]
-const clip = (value, maximum) =>
-  value.length <= maximum ? value : `${value.slice(0, maximum - 1)}…`
 
-/** invest-cli 的 21 个子命令（与 scripts/invest_cli.py 的 dispatch 表一一对应）。 */
-export const COMMANDS = Object.freeze([
-  'stock', 'fund', 'us', 'quote', 'kline',
-  'sec', 'fmp', 'fund-class', 'cn', 'screen',
-  'westock', 'datasources', 'wind', 'yingmi', 'ttskill',
-  'capabilities', 'intent', 'info', 'watchlist', 'tenure', 'report',
-])
+/** 命令面与插件元数据：唯一真源是 scripts/command_registry.py，本文件只消费生成物。 */
+export const COMMAND_CATEGORIES = Object.freeze(REGISTRY.categories)
+
+export const COMMANDS = Object.freeze(REGISTRY.commands)
+
+/** 数据源面板：id/优先级/覆盖/凭据来自 data-sources.yaml，英文名与免密标记来自注册表。 */
+export const DATA_SOURCES = Object.freeze(REGISTRY.sources)
+
+export const DATA_SOURCE_KEYS = Object.freeze(REGISTRY.sourceKeys)
+
+/** 慢命令预算、大结果预算与默认值；改值去 scripts/command_registry.py。 */
+export const COMMAND_TIMEOUTS = Object.freeze(REGISTRY.timeouts)
+
+export const DEFAULTS = Object.freeze(REGISTRY.defaults)
+
+export const COMMAND_OUTPUT_LIMITS = Object.freeze(REGISTRY.outputLimits)
 
 /**
- * 慢命令的超时预算。tenure 要串「在管清单 → 逐只净值分段抓取 → 基准指数 →
- * 分年度统计」，冷跑实测 >60s（Wind 净值单次硬顶 100 行，6 只基金 53 次调用）；
- * report 要下载 PDF；sec 的 companyfacts 单文件约 3.7MB。默认 60s 会把它们误杀。
+ * Schemastery 可选加载：若宿主提供则导出 Schema 供 DSH 设置表单自动校验，
+ * 缺席时优雅降级为 undefined（离线测试与 headless 环境不受影响）。
  */
-const COMMAND_TIMEOUTS = Object.freeze({
-  tenure: 180_000,
-  report: 120_000,
-  sec: 90_000,
-  screen: 60_000,
-  cn: 60_000,
-  fmp: 60_000,
+let Schema
+try {
+  const schemastery = await import('@deepseek-ai/schemastery')
+  Schema = schemastery.default ?? schemastery.Schema ?? schemastery
+} catch {
+  // 无 schemastery 依赖时保持 undefined
+}
+
+export const Config = Schema === undefined ? undefined : Schema.object({
+  timeoutMs: Schema.number().default(DEFAULTS.timeoutMs)
+    .description('单次命令默认超时（毫秒）')
+    .volatile(),
+  maxOutputChars: Schema.number().default(DEFAULTS.maxOutputChars)
+    .description('单次命令返回字符上限（字符）')
+    .volatile(),
+  json: Schema.boolean().default(DEFAULTS.json)
+    .description('默认返回结构化 JSON（false 为终端表格）')
+    .volatile(),
+  maxArgs: Schema.number().default(DEFAULTS.maxArgs)
+    .description('单次调用的参数个数上限')
+    .volatile(),
+  cliPath: Schema.string().default('')
+    .description('自定义 invest-cli 二进制或入口路径（留空自动探测）')
+    .volatile(),
+  skillRoot: Schema.string().default('')
+    .description('自定义 invest-cli skill 根目录（留空自动探测）')
+    .volatile(),
+  disabledSources: Schema.string().default(DEFAULTS.disabledSources)
+    .description('停用的数据源（逗号分隔）；停用后不参与自动路由，具名直调不受影响')
+    .volatile(),
 })
 
-export const DEFAULTS = Object.freeze({
-  timeoutMs: 60_000,
-  maxOutputChars: 24_000,
-  /** 默认给模型结构化输出；置 false 则拿终端表格（人读形态）。 */
-  json: true,
-  /** 单次调用的参数个数/长度上限（防呆；argv 直传不经 shell，无注入面）。 */
-  maxArgs: 32,
-  maxArgChars: 512,
-})
+/** 单次调用的输出预算：显式配置 > 命令专项 > history 变体 > 默认。 */
+export function outputBudget(command, args = [], config = {}) {
+  const per = config.maxOutputCharsByCommand ?? {}
+  if (Number.isFinite(per[command]) && per[command] > 0) return per[command]
+  if (Number.isFinite(COMMAND_OUTPUT_LIMITS[command])) return COMMAND_OUTPUT_LIMITS[command]
+  const argv = (args || []).map(String)
+  if (command === 'us' && argv.includes('--history')) return 80_000
+  const base = config.maxOutputChars ?? DEFAULTS.maxOutputChars
+  return Number.isFinite(base) && base > 0 ? base : DEFAULTS.maxOutputChars
+}
+
+/**
+ * 截断但**不制造坏 JSON**：超预算的 JSON 给一个合法信封 + 可执行的下一步，
+ * 而不是切在任意字符上。纯文本（终端表格）仍按字符截断，因为那不参与解析。
+ */
+export function safeClip(body, max) {
+  if (body.length <= max) return body
+  const head = body.replace(/^\s+/, '')[0]
+  if (head === '{' || head === '[') {
+    try {
+      JSON.parse(body)
+      return JSON.stringify({
+        ok: false,
+        truncated: true,
+        original_chars: body.length,
+        limit: max,
+        hint: '结果超过单次输出上限：改用 --brief / --limit，或拆成更小的查询',
+        preview: body.slice(0, Math.min(1200, max)),
+      })
+    } catch {
+      // 非法 JSON 按文本处理（不是本函数能修复的）
+    }
+  }
+  // 纯文本保持旧口径（恰好 max 字符、以省略号收尾）：不参与解析，越短越好。
+  return body.slice(0, Math.max(0, max - 1)) + '…'
+}
 
 export function expandHome(p) {
+  if (!p) return ''
   if (p === '~') return homedir()
   return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
 }
@@ -76,29 +138,40 @@ export function skillRootFrom(moduleUrl) {
 /**
  * 入口解析：优先 wrapper（它自己会选 venv，且认得 INVEST_CLI_ROOT），
  * 其次 skill 自带 venv 直跑脚本，最后系统 python3。
- *
- * 为什么把 INVEST_CLI_ROOT 显式传进去：wrapper 的三段目录搜索在
- * cron / sudo / 换 HOME 的场景下会落空（它自己的注释记着这个坑）。插件知道
- * skill 在哪，就顺手告诉它，省掉那段搜索的不确定性。
  */
 export function resolveEntry(config = {}, deps = {}) {
-  const skillRoot = expandHome(config.skillRoot ?? deps.skillRoot ?? '')
+  let skillRoot = expandHome(config.skillRoot ?? deps.skillRoot ?? '')
   const exists = deps.exists ?? existsSync
+  if (skillRoot && !exists(join(skillRoot, 'scripts', 'invest_cli.py')) && exists(join(skillRoot, 'skills', 'invest-cli'))) {
+    skillRoot = join(skillRoot, 'skills', 'invest-cli')
+  }
+  let entry
   if (config.cliPath) {
-    return { command: expandHome(config.cliPath), args: [], env: rootEnv(skillRoot) }
+    entry = { command: expandHome(config.cliPath), args: [] }
+  } else {
+    const wrapper = join(homedir(), '.local', 'bin', 'invest-cli')
+    if (exists(wrapper)) {
+      entry = { command: wrapper, args: [] }
+    } else {
+      const script = join(skillRoot, 'scripts', 'invest_cli.py')
+      const venvPython = join(skillRoot, '.venv', 'bin', 'python')
+      entry = { command: exists(venvPython) ? venvPython : 'python3', args: [script] }
+    }
   }
-  const wrapper = join(homedir(), '.local', 'bin', 'invest-cli')
-  if (exists(wrapper)) {
-    return { command: wrapper, args: [], env: rootEnv(skillRoot) }
-  }
-  const script = join(skillRoot, 'scripts', 'invest_cli.py')
-  const venvPython = join(skillRoot, '.venv', 'bin', 'python')
-  const python = exists(venvPython) ? venvPython : 'python3'
-  return { command: python, args: [script], env: {} }
+  return { ...entry, env: { ...rootEnv(skillRoot), ...sourceToggleEnv(config.disabledSources) } }
 }
 
 function rootEnv(skillRoot) {
   return skillRoot ? { INVEST_CLI_ROOT: skillRoot } : {}
+}
+
+/** 停用集 → 子进程 env。空串/未设置不注入（route 侧空值即全员参战）。 */
+function sourceToggleEnv(raw) {
+  const list = String(raw ?? '')
+    .split(/[,;\s]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+  return list.length ? { INVEST_CLI_DISABLE_SOURCES: list.join(',') } : {}
 }
 
 /** 单次命令的超时（按命令分档，见 COMMAND_TIMEOUTS）。 */
@@ -115,81 +188,90 @@ export function pickTimeout(command, config = {}) {
   return Number.isFinite(base) && base > 0 ? base : DEFAULTS.timeoutMs
 }
 
-/** 参数校验：全部转成字符串，丢掉空串，拒绝 NUL（spawn 会抛 ValueError）。 */
-export function sanitizeArgs(args, config = {}) {
-  const maxArgs = config.maxArgs ?? DEFAULTS.maxArgs
-  const maxArgChars = config.maxArgChars ?? DEFAULTS.maxArgChars
-  if (args === undefined || args === null) return []
-  if (!Array.isArray(args)) throw new Error('invest: args must be an array of strings')
-  if (args.length > maxArgs) throw new Error(`invest: too many args (max ${maxArgs})`)
-  const out = []
-  for (const raw of args) {
-    if (raw === undefined || raw === null) continue
-    if (typeof raw === 'object') throw new Error('invest: args entries must be strings')
-    const s = String(raw)
-    if (s === '') continue
-    if (s.includes('\u0000')) throw new Error('invest: args must not contain NUL bytes')
-    if (s.length > maxArgChars) throw new Error(`invest: arg too long (max ${maxArgChars})`)
-    out.push(s)
+export function sanitizeArgs(raw = []) {
+  if (!Array.isArray(raw)) throw new TypeError('invest args must be an array of strings')
+  if (raw.length > DEFAULTS.maxArgs) {
+    throw new Error(`too many args: ${raw.length} > ${DEFAULTS.maxArgs}`)
   }
-  return out
+  const cleaned = []
+  for (const item of raw) {
+    if (item === undefined || item === null) continue
+    if (typeof item !== 'string') {
+      throw new TypeError(`all args must be strings, got ${typeof item}`)
+    }
+    const trimmed = item.trim()
+    if (!trimmed) continue
+    if (trimmed.includes('\u0000')) {
+      throw new Error('arg contains NUL character')
+    }
+    if (trimmed.length > DEFAULTS.maxArgChars) {
+      throw new Error(`arg too long: ${trimmed.length} > ${DEFAULTS.maxArgChars}`)
+    }
+    cleaned.push(trimmed)
+  }
+  return cleaned
 }
 
-/** 组装 argv（命令 + 参数 + --json）。 */
-export function buildArgv(command, args, wantJson) {
-  const argv = [command, ...sanitizeArgs(args)]
-  if (wantJson) argv.push('--json')
+export function buildArgv(command, userArgs = [], wantJson = true) {
+  const cleaned = sanitizeArgs(userArgs)
+  const argv = [command, ...cleaned]
+  if (wantJson && !argv.includes('--json')) argv.push('--json')
   return argv
 }
 
-/** 跑一次 CLI；返回 {code, stdout, stderr}，超时/启动失败也走同一形状。 */
-export function runCli(entry, argv, timeoutMs, deps = {}) {
-  const spawnFn = deps.spawn ?? spawn
-  return new Promise((resolvePromise) => {
-    let child
-    try {
-      child = spawnFn(entry.command, [...entry.args, ...argv], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, ...entry.env },
-      })
-    } catch (err) {
-      resolvePromise({ code: -1, stdout: '', stderr: `spawn failed: ${err?.message ?? err}` })
-      return
-    }
+export function failureText(argv, result) {
+  const head = `invest-cli ${argv.join(' ')} failed (rc=${result.code})`
+  const tail = (result.stderr || result.stdout || '').trim()
+  return tail ? `${head}\n${tail}` : head
+}
+
+function spawnRun(entry, argv, timeoutMs) {
+  return new Promise((resolveResult) => {
+    const child = spawn(entry.command, [...entry.args, ...argv], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...entry.env },
+    })
     let stdout = ''
     let stderr = ''
+    let killedByTimeout = false
+
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+
     const timer = setTimeout(() => {
+      killedByTimeout = true
       child.kill('SIGKILL')
-      resolvePromise({
-        code: -1,
-        stdout,
-        stderr: `invest-cli ${argv[0]} timed out after ${timeoutMs}ms (SIGKILL)`,
-      })
     }, timeoutMs)
-    child.stdout?.on('data', (chunk) => { stdout += chunk.toString('utf8') })
-    child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8') })
-    child.on('error', (err) => {
-      clearTimeout(timer)
-      resolvePromise({ code: -1, stdout: '', stderr: `spawn error: ${err?.message ?? err}` })
-    })
+
     child.on('close', (code) => {
       clearTimeout(timer)
-      resolvePromise({ code: code ?? -1, stdout, stderr })
+      if (killedByTimeout) {
+        resolveResult({
+          code: -1,
+          stdout,
+          stderr: `invest-cli ${argv.join(' ')} timed out after ${timeoutMs}ms (SIGKILL)`,
+        })
+        return
+      }
+      resolveResult({ code: code ?? 0, stdout, stderr })
+    })
+
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      resolveResult({
+        code: -1,
+        stdout,
+        stderr: `cannot spawn invest-cli (${entry.command}): ${err.message}`,
+      })
     })
   })
 }
 
-/** 失败时的错误文案：stderr 尾部优先，其次 stdout 尾部（两者都可能承载原因）。 */
-export function failureText(argv, result) {
-  const tail = (s) => s.trim().split('\n').slice(-12).join('\n')
-  const body = tail(result.stderr) || tail(result.stdout)
-  return `invest-cli ${argv.join(' ')} failed (rc=${result.code})${body ? `:\n${body}` : ''}`
-}
-
 export function makeInvestTool(config = {}, deps = {}) {
   const skillRoot = deps.skillRoot ?? skillRootFrom(import.meta.url)
-  const run = deps.run ?? runCli
-  const maxChars = config.maxOutputChars ?? DEFAULTS.maxOutputChars
+  const run = deps.run ?? spawnRun
   const wantJsonDefault = config.json ?? DEFAULTS.json
 
   return {
@@ -245,7 +327,8 @@ export function makeInvestTool(config = {}, deps = {}) {
         // 与 CLI 自身纪律一致：rc=0 但没有输出 = 假成功，不能当空结果传下去。
         throw new Error(`invest-cli ${argv.join(' ')} 退出码为 0 但没有输出（非空结果才可信）`)
       }
-      return { stdout: body, text: clip(body, maxChars), command }
+      const budget = outputBudget(command, args?.args, config)
+      return { stdout: body, text: safeClip(body, budget), command, budget }
     },
   }
 }
@@ -254,10 +337,9 @@ export function apply(ctx, providedConfig = {}) {
   const config = { ...DEFAULTS, ...(isObject(providedConfig) ? providedConfig : {}) }
   ctx.tools.register(makeInvestTool(config))
 
-  // 命令目录：这是「不读 23KB SKILL.md 也能用」的那一层。刻意写成紧凑分组
-  // （≈150 token/轮），而不是把 SKILL.md 搬进来——常驻开销才是单入口方案
-  // 要守住的东西。
-  const prompt = ctx.get?.('systemPrompt') ?? ctx.systemPrompt
+  // 命令目录：注入 systemPrompt，保持紧凑（≈150 token/轮）
+  // 使用 ctx.get('systemPrompt') 安全探测可选服务，避免直接访问未声明属性触发 Cordis 代理拦截
+  const prompt = typeof ctx.get === 'function' ? ctx.get('systemPrompt') : undefined
   if (prompt && typeof prompt.section === 'function') {
     prompt.section({
       name: 'tool:invest',
@@ -275,6 +357,7 @@ export function apply(ctx, providedConfig = {}) {
         'report <基金代码> [--latest N] — 基金定期报告 PDF；info <关键词> — 财经资讯检索',
         'watchlist [add|remove|list] · capabilities · datasources — 自选股 / 能力清单 / 数据源状态',
         'westock <子命令> <代码> · wind · yingmi · ttskill · intent — 长尾透传（筹码/龙虎榜/资金流/Wind/盈米/天天基金）',
+        '任何命令都可加 --envelope 得 {ok,source,data,error,meta}；大结果用 --brief（sec/us --history）或 --limit（screen）。',
         'Ask for `capabilities` when unsure what a long-tail command accepts.',
       ].join('\n'),
     })

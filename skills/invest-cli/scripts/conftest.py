@@ -30,6 +30,9 @@ def isolated_cli_dirs(tmp_path, monkeypatch):
     """每个用例一份独立的缓存/状态目录，物理上碰不到用户真实目录。"""
     monkeypatch.setenv("INVEST_CLI_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("INVEST_CLI_STATE_DIR", str(tmp_path / "state"))
+    # 源停用集是本机环境变量（面板/用户可设）：链序断言锁的是设计真值，
+    # 本机若恰好停用了某个源会让全体路由断言随环境腐烂——与凭据状态同罪。
+    monkeypatch.delenv("INVEST_CLI_DISABLE_SOURCES", raising=False)
     yield
 
 

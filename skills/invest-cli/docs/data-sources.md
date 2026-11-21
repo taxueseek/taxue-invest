@@ -18,12 +18,16 @@
 | 东方财富 | API | stock / fund / screen | 50 | 设置 `EASTMONEY_APIKEY` |
 | Yahoo Finance（yfinance） | python | us | 40 | 安装 `yfinance` |
 | SEC EDGAR（美股财报原文） | API | us 财报原文（10-K XBRL 指标 + 申报清单） | 45 | 免费无 key（可选 `SEC_EDGAR_USER_AGENT` 声明身份）；`invest-cli sec <代码>` 直取，不经快照链 |
-| Financial Modeling Prep（fmp） | API | us_fundamentals / us_estimates / us_rating / dividends | 46 | `FMP_API_KEY` 或 `~/.config/invest-cli/fmp.env`；`invest-cli fmp <代码>` 直取，不经快照链（免费档 250 次/天） |
+| Financial Modeling Prep（fmp） | API | us_fundamentals / us_estimates / us_rating / dividends；us 链末位兜底 | 34 | `FMP_API_KEY` 或 `~/.config/invest-cli/fmp.env`；`invest-cli fmp <代码>` 深取；快照只在 yfinance/腾讯/Tiingo/Bitget 全败时使用（免费档 250 次/天，一次快照 5 请求） |
 | Tiingo（美股 EOD） | API | us / eod_history | 36 | `TIINGO_API_KEY` 或 `~/.config/invest-cli/tiingo.env`；EOD 历史专项 `invest-cli us <代码> --history` |
 | Bitget rToken | API | us（仅行情） | 35 | 始终可用（公开 API，无 key，stdlib） |
+| 易方达指数直通车（index_hub） | API | fund / index 的 ETF 详情与规模 | 65 | `INDEX_HUB_API_KEY` 或 `~/.config/index-hub/api_key`；仅 `invest-cli fund --analytics` 增强项，失败静默跳过，不进快照链 |
+| 首趋E指（etfirst） | CLI | ETF 详情 / 估值 / 行业分布 / Wind 排名 | 63 | 可选外部 CLI；未安装时自动跳过，只服务 `fund --analytics`，不影响任何主链 |
 | 天天基金（直连 gateway，可选深取引擎） | API | fund（同类分位/机构占比/在管列表深取） | 55 | 官方凭据未过期（Keychain）+ 已装业务包；缺省自动跳过（主路=自带 hithink>eastmoney） |
+| 华泰柏瑞ETF（htbr，透传 htbr-etf-skill） | API | fund / index / etf / fund_manager / industry_distribution / earning_forecast / capital_flow | 62 | `~/.htbr/credentials.json`（htbr 包内 config.py 读取，**不读** `HTBR_API_KEY` 环境变量）+ 内网/VPN 可达 htbr 服务端点（域名以内网为准，见 htbr 包内文档）；`invest-cli htbr` 直取，不进快照链 |
+| 见基行事（sfg，透传 seefundgo MCP） | API | fund / etf / index / manager / screen / ranking / portfolio / market | 64 | `SFG_MCP_TOKEN` 或 `~/.config/invest-cli/sfg.env`；`invest-cli sfg <别名>` / `intent sfg` 直取，不进快照链。**积分制**：余额 0 时全工具被拒，只做妙想没有的垂直深取（经理画像/归因/风格漂移/选基排行榜/组合体检），通用取数走 mxds。上游要标准码（`005827.OF`/`510300.SH`），裸码先搜索解析；组合诊断走异步 submit + 轮询（实测 300-340s） |
 
-优先级的含义：同一**问题**有多个数据源可用时，按优先级从高到低选取；高优先级源失败才整单降级。yaml 的 coverage 只是声明；适配器必须暴露 `stock()` / `fund()` / `us()` / `screen()` 才会进入默认快照链。Wind 声明覆盖 stock 但只有 `call()`，因此**不会**出现在 `invest-cli stock` 里。
+优先级的含义：同一**问题**有多个数据源可用时，按优先级从高到低选取；高优先级源失败才整单降级。yaml 的 coverage 只是声明；适配器必须暴露 `stock()` / `fund()` / `us()` / `screen()` 才会进入默认快照链。Wind 声明覆盖 stock 但只有 `call()`，因此**不会**出现在 `invest-cli stock` 里。`route_kinds` 为空（wind/yingmi/htbr/sfg/index_hub/etfirst 等）表示只经具名命令直取，priority 仅用于展示排序，不参与快照链。
 
 运行时链由 `scripts/sources/route.py` 计算，`invest-cli datasources` 打印。不要在各 cmd_* 里再写一套 if/else。
 
@@ -276,6 +280,27 @@ invest-cli 只暴露两处入口，Agent 不直接管理 37 个业务包：
 
 ---
 
+### 见基行事（sfg，透传 seefundgo 公募基金 MCP）
+
+```bash
+export SFG_MCP_TOKEN=<你的Token>     # 或写入 ~/.config/invest-cli/sfg.env
+```
+
+启用能力：`invest-cli sfg <别名> --input '<json>'`（`--list` 看 37 个别名）与
+`invest-cli intent sfg "<查询>"`（单只→档案，多只→组合诊断）。
+
+- 协议是**会话式** Streamable HTTP：initialize 后必须回带 `mcp-session-id`，
+  适配器已封装（过期自动重 Initialize 一次）
+- 代码口径：上游要标准码（`005827.OF` / `510300.SH`），**裸 6 位码直接 404**；
+  同一代码可能场内外并存（005827 只有 `.OF`、161725 只有 `.SZ`、510300 只有 `.SH`），
+  本模块**不猜后缀**，先经 `sfg_search_funds` 解析；多候选（A/C 份额）不自动挑
+- 组合诊断走异步：同步 `sfg_portfolio_check` 有 30s 服务端硬顶（两只基金即超时），
+  用 `portfolio-submit` 拿 job_id 后 `invest-cli sfg --poll <job_id>` 轮询
+- 出处标注：产出必须保留「数据来源：见基行事MCP（fundfof.com）」
+- 字段口径真源：上游 `sfg_help` 与资源 `sfg://api-catalog`，本模块不解释字段
+
+---
+
 ## 快速自检
 
 ```bash
@@ -283,6 +308,7 @@ invest-cli datasources              # 查看各数据源是否可用
 invest-cli sec AAPL                 # SEC 财报原文（免费，无需配置）
 invest-cli wind stock_data get_stock_price_indicators --input '{"windcode":"600519.SH"}'
 invest-cli yingmi GetCurrentTime
+invest-cli sfg --list               # 见基行事别名清单
 ```
 
 数据来源于万得 Wind 金融数据服务 / 盈米且慢 / 同花顺金融数据服务 / 东方财富 / Yahoo Finance / SEC EDGAR / Bitget rToken。

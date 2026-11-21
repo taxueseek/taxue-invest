@@ -19,7 +19,7 @@ import sources.mxds as mxds
 def _capture_call(monkeypatch):
     calls = []
 
-    def fake(tool, q):
+    def fake(tool, q, **kwargs):
         calls.append((tool, q))
         return {"source": "mxds", "kind": tool, "ok": True,
                 "data": {"data": [{"columns": [], "items": []}]}, "error": None}
@@ -98,7 +98,7 @@ def test_auto_cache_hit_skips_second_call(monkeypatch):
     """同查询 300s 内第二次不再打网，命中带 cached=True。"""
     n = {"count": 0}
 
-    def fake(tool, q):
+    def fake(tool, q, **kwargs):
         n["count"] += 1
         return {"source": "mxds", "kind": tool, "ok": True,
                 "data": {"data": [{"v": q}]}, "error": None}
@@ -116,7 +116,7 @@ def test_auto_failed_call_not_cached(monkeypatch):
     """失败结果不写缓存——偶发服务端波动不该被固化为 5 分钟失败。"""
     n = {"count": 0}
 
-    def fake(tool, q):
+    def fake(tool, q, **kwargs):
         n["count"] += 1
         return {"source": "mxds", "kind": tool, "ok": False,
                 "data": None, "error": "HTTP 503: Service Unavailable: up"}
@@ -165,3 +165,129 @@ def test_ticker_like():
     assert mxds._ticker_like("AAPL 最新价") is True
     assert mxds._ticker_like("PE 最低的银行股") is False
     assert mxds._ticker_like("苹果公司") is False
+
+
+# ---------- 快照信封校验（消灭「模糊匹配答错标的」整类） ----------
+#
+# 背景（2026-10-14 实测）：妙想快照类工具的服务端实现是自然语言检索，对**所有**
+# 输入都返回表格信封——真实标的、不存在代码、错别字名称无一例外。route 快照链的
+# 「第一个 ok 即停」把检索结果当快照交接，后果两种都坏：
+#   ① `stock 999999` → cmd_stock.format_terminal 在 list 上 `.get("昨收")`
+#      炸 AttributeError（rc=1 + traceback）；
+#   ② `intent deep stock 999999` → rc=0 把「全部A股(板块)」全市场汇总当个股
+#      快照静默交付（known-issues 自列的最危险类别）。
+# 处置（2026-10-14 晚审查后修订）：_call_tool 的 snapshot 参数把两种契约显式
+# 分开——route 链（stock/fund/us）要 dict 快照，intent mxds（auto()）要原样
+# 表格。判据是正向契约「快照的 data 必须是 dict」，不是「拒带 columns 的表格」
+# （后者漏 list-of-entity-dicts / 顶层数组 / 表格包 dict 三类形态，审查实测
+# 均复现原 P0）。
+
+def _search_envelope() -> dict:
+    """妙想 NLU 检索信封（实测形状）：表格列表，非单一标的快照。"""
+    return {"data": [{"columns": ["全部A股(板块)", "2026-10-14(日)"],
+                      "items": [["营业总收入(合计)", "37.78万亿元"]]}]}
+
+
+def _stub_mcp(monkeypatch, payload):
+    monkeypatch.setattr(mxds, "_mcp_call",
+                        lambda tool, q, timeout=30: {"ok": True, "data": payload,
+                                                     "raw_text": "stub"})
+
+
+def test_snapshot_tools_reject_search_envelope(monkeypatch):
+    """stock/fund/us 拿到表格信封必须按未找到拒绝，而不是放行成快照。"""
+    _stub_mcp(monkeypatch, _search_envelope())
+    for fn, arg in ((mxds.stock, "999999"), (mxds.fund, "110011"),
+                    (mxds.us, "AAPL")):
+        res = fn(arg)
+        assert res["ok"] is False, f"{fn.__name__}({arg}) 放行了检索信封"
+        assert "未找到匹配标的" in res["error"]
+        assert res["data"] is None
+
+
+def test_snapshot_rejects_all_non_dict_shapes(monkeypatch):
+    """正向契约：快照的 data 必须是 dict。三类漏网形态同样会让
+    format_terminal 崩溃或输出空表（2026-10-14 审查实测复现），必须拒。"""
+    shapes = {
+        "list_of_entity_dicts": {"data": [{"name": "贵州茅台", "code": "600519"}]},
+        "table_wrapped_in_dict": {"data": {"columns": ["贵州茅台"], "items": [["1286.0"]]}},
+        "top_level_array": ["贵州茅台", "1286.0"],
+    }
+    for name, payload in shapes.items():
+        _stub_mcp(monkeypatch, payload)
+        res = mxds.stock("600519")
+        assert res["ok"] is False, f"{name} 漏过了守卫"
+        assert "未找到匹配标的" in res["error"], name
+
+
+def test_snapshot_tools_accept_dict_snapshot(monkeypatch):
+    """dict 形状（真实快照）不受影响——守卫只要求 dict，不预判未来形态。"""
+    snap = {"data": {"name": "贵州茅台", "code": "600519", "昨收": "1286.0"}}
+    _stub_mcp(monkeypatch, snap)
+    res = mxds.stock("600519")
+    assert res["ok"] is True
+    assert res["data"] is snap
+
+
+def test_search_tools_keep_table_envelope(monkeypatch):
+    """screen/news/notice/bond/index/macro/comprehensive 要的就是表格，不拒。"""
+    _stub_mcp(monkeypatch, _search_envelope())
+    for fn, arg in ((mxds.screen, "市盈率低于10的银行股"), (mxds.news, "茅台"),
+                    (mxds.notice, "贵州茅台 年报"), (mxds.bond, "019546"),
+                    (mxds.index, "沪深300"), (mxds.macro, "GDP"),
+                    (mxds.comprehensive, "宁德时代")):
+        assert fn(arg)["ok"] is True, f"{fn.__name__} 误拒了表格"
+
+
+def test_auto_keeps_tables_for_intent_mxds(monkeypatch):
+    """auto() 是 intent mxds 的入口，契约是「表格即答案」——SKILL.md 明文
+    推荐 `intent mxds "AAPL 股价"`。2026-10-14 审查实测：把拒绝设为
+    _call_tool 的默认行为会误杀这 4 条路由，故 auto() 显式放行。"""
+    _stub_mcp(monkeypatch, _search_envelope())
+    for q in ("999999", "腾讯 港股", "易方达蓝筹 基金净值", "AAPL 股价"):
+        res = mxds.auto(q)
+        assert res["ok"] is True, f"auto({q!r}) 误杀了 intent mxds 路由"
+        assert res["data"] == _search_envelope()
+
+
+def test_route_chain_falls_through_mxds_rejection(monkeypatch):
+    """route「第一个 ok 即停」：mxds 拒了必须落到下一源，而不是崩或停。"""
+    from sources import route
+
+    _stub_mcp(monkeypatch, _search_envelope())
+
+    def fake_invoke(sid, kind, arg):
+        if sid == "mxds":
+            return mxds.stock(arg)
+        return {"source": sid, "kind": kind, "ok": True,
+                "data": {"name": "兜底源快照"}}
+
+    res = route.fetch("stock", "999999", order=["mxds", "fake_fallback"],
+                      invoke=fake_invoke)
+    assert res["ok"] is True
+    assert res["source"] == "fake_fallback"
+    assert res.get("fallback_from") == "mxds"
+    assert "mxds" in res.get("fallback_error", "")
+
+
+def test_unwrap_snapshot_raises_clean_error_not_attributeerror(monkeypatch):
+    """症状回归：修复前表格信封流过 unwrap_snapshot，format_terminal 在 list
+    上 .get 炸 AttributeError；现在 unwrap 直接抛带明确文案的 RuntimeError。"""
+    from sources.route import unwrap_snapshot
+
+    _stub_mcp(monkeypatch, _search_envelope())
+    res = mxds.stock("999999")
+    assert res["ok"] is False
+    with pytest.raises(RuntimeError, match="未找到匹配标的"):
+        unwrap_snapshot(res)
+
+
+def test_is_search_envelope_branches():
+    """形状判据分支：表格列表 / 表格 dict 命中，实体 dict 列表 / 空 / 非 dict 不命中。"""
+    assert mxds._is_search_envelope({"data": [{"columns": [], "items": []}]}) is True
+    assert mxds._is_search_envelope({"data": {"columns": [], "items": []}}) is True
+    assert mxds._is_search_envelope({"data": [{"name": "x"}]}) is False
+    assert mxds._is_search_envelope({"data": {}}) is False
+    assert mxds._is_search_envelope({"data": []}) is False
+    assert mxds._is_search_envelope(["top", "level"]) is False
+    assert mxds._is_search_envelope(None) is False

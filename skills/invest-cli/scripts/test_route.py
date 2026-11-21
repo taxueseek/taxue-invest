@@ -22,8 +22,14 @@ def test_stock_a_excludes_wind_and_orders() -> None:
 
 
 def test_stock_hk_excludes_hithink() -> None:
+    from sources.route import candidates
+
     ids = pick("stock", market="hk")
     assert "hithink" not in ids
+    cands = candidates("stock", market="hk")
+    assert cands.index("eastmoney") < cands.index("tencent")
+    if "yfinance" in cands:
+        assert cands.index("tencent") < cands.index("yfinance")
 
 
 def test_fund_snapshot_skips_yingmi_ttfund() -> None:
@@ -39,9 +45,9 @@ def test_us_skips_uninstalled_yfinance() -> None:
     ids = pick("us")
     assert "hithink" not in ids
     assert "eastmoney" not in ids
-    assert "bitget" in ids
-    if "yfinance" in ids:
-        assert ids.index("yfinance") < ids.index("bitget")
+    assert "bitget" not in ids, "bitget 代币价不再进入美股默认快照链"
+    if "yfinance" in ids and "tencent" in ids:
+        assert ids.index("yfinance") < ids.index("tencent")
 
 
 def test_screen_orders_mxds_before_eastmoney() -> None:
@@ -295,13 +301,143 @@ def test_failure_cache_expires_after_ttl(monkeypatch, tmp_path) -> None:
 
 
 
+def test_kind_fns_matches_registry_route_kinds() -> None:
+    """可路由 kind 的声明必须等于配置真源（route_kinds 的并集）。
+
+    KIND_FNS 曾写 9 种而配置里只有 4 种有链，bond/index/macro/news/notice
+    是「看起来支持」的假承诺——`fetch("bond")` 恒报「无可用数据源」。
+    新增可路由 kind 时改 yaml 的 route_kinds 即可，本处同步；漏改则本用例变红。
+    """
+    from sources import load_registry
+    from sources.route import KIND_FNS
+
+    declared: set[str] = set()
+    for conf in load_registry().values():
+        declared.update(conf.get("route_kinds") or ())
+    assert set(KIND_FNS) == declared
+
+
+def test_disabled_sources_excluded_from_candidates(monkeypatch) -> None:
+    """INVEST_CLI_DISABLE_SOURCES 是「面板选择」的引擎侧原语：停用源不进路由链。
+
+    语义是「不要自动选它」——candidates/pick/chains 全部经过 candidates，一处
+    过滤三层生效；具名直调（invest-cli wind / htbr）是用户点名，不受影响。
+    分隔符容忍逗号/分号/空白与大小写（面板写入的是逗号串，用户手改环境可能
+    带空格或大写）。
+    """
+    from sources.route import candidates, disabled_sources
+
+    monkeypatch.setenv("INVEST_CLI_DISABLE_SOURCES", "hithink, TTSKILL ;")
+    assert disabled_sources() == frozenset({"hithink", "ttskill"})
+    fund = candidates("fund")
+    assert "hithink" not in fund and "ttskill" not in fund
+    assert "eastmoney" in fund, "未停用的源必须留在链上"
+
+
+def test_disabled_sources_unset_is_noop(monkeypatch) -> None:
+    from sources.route import candidates, disabled_sources
+
+    monkeypatch.delenv("INVEST_CLI_DISABLE_SOURCES", raising=False)
+    assert disabled_sources() == frozenset()
+    assert "hithink" in candidates("stock", market="a")
+
+
+def test_disabled_sources_empty_value_is_noop(monkeypatch) -> None:
+    """面板 config 的缺省值是空串——空串必须等价于未设置，不能解析出假源名。"""
+    from sources.route import candidates, disabled_sources
+
+    monkeypatch.setenv("INVEST_CLI_DISABLE_SOURCES", "")
+    assert disabled_sources() == frozenset()
+    # 顺手断言链上仍有源：选腾讯（零依赖免 Key）而非 yfinance——
+    # 后者在缺件解释器上会被 REQUIRED_IMPORTS 判缺摘链，属环境相关断言
+    assert "tencent" in candidates("us")
+
+
+def test_disabled_sources_pick_and_chains_inherit(monkeypatch) -> None:
+    """pick/chains 走 candidates，停用集在三层同时生效（datasources 靠它报停用态）。"""
+    from sources.route import chains, pick
+
+    monkeypatch.setenv("INVEST_CLI_DISABLE_SOURCES", "tencent,bitget")
+    assert "tencent" not in pick("us")
+    assert "bitget" not in chains()["us"]
+
+
+def test_deps_missing_unit_and_noop() -> None:
+    """REQUIRED_IMPORTS 判缺：声明了缺件依赖 → 判缺；未声明 → 永不判缺（行为不变）。"""
+    from sources import tencent as tencent_mod
+    from sources.route import _deps_missing
+
+    class _FakeModule:
+        REQUIRED_IMPORTS = ("nonexistent_pkg_for_route_test",)
+
+    assert _deps_missing(_FakeModule()) == ["nonexistent_pkg_for_route_test"]
+    assert _deps_missing(tencent_mod) == []
+
+
+def test_candidates_drops_adapter_with_missing_dependency(monkeypatch) -> None:
+    """链上效果：给腾讯声明一个不存在的依赖，us 链必须把它摘掉（缺件摘链语义）。
+
+    这是 test_doc_source_truth「缺 yfinance 时 us 链头降级到腾讯」的机制测试——
+    不管当前解释器装没装 yfinance，摘链语义本身都必须成立。
+    """
+    import sources.tencent as tencent_mod
+    from sources.route import candidates
+
+    monkeypatch.setattr(
+        tencent_mod, "REQUIRED_IMPORTS", ("nonexistent_pkg_for_route_test",), raising=False
+    )
+    assert "tencent" not in candidates("us")
+
+
+def test_real_third_party_dependencies_are_declared() -> None:
+    """真第三方依赖必须声明在适配器层：漏声明会复活 us/fund 链头的缺件假承诺。
+
+    yfinance 包在 cmd_us.py 函数内延迟 import；cryptography 在 ttskill.py
+    函数内延迟 import——两处都是「适配器可导入 ≠ 依赖可导入」的实例。
+    """
+    from sources import ttskill as ttskill_mod
+    from sources import yfinance as yfinance_mod
+
+    assert "yfinance" in getattr(yfinance_mod, "REQUIRED_IMPORTS", ())
+    assert "cryptography" in getattr(ttskill_mod, "REQUIRED_IMPORTS", ())
+
+
+def test_fallback_from_records_primary_failed_source() -> None:
+    """链上连续两源失败后第三源成功，fallback_from 应记录第一顺位主源而非最后一个失败源。"""
+    from sources.route import fetch
+
+    def fake_invoke(sid: str, kind: str, arg: str) -> dict:
+        if sid in ("a", "b"):
+            return {"source": sid, "kind": kind, "ok": False, "data": None, "error": f"{sid} err"}
+        return {"source": sid, "kind": kind, "ok": True, "data": {"ok": 1}, "error": None}
+
+    res = fetch("stock", "600519", order=["a", "b", "c"], invoke=fake_invoke)
+    assert res["ok"] is True
+    assert res["source"] == "c"
+    assert res["fallback_from"] == "a"
+    assert "a: a err" in res["fallback_error"]
+    assert "b: b err" in res["fallback_error"]
+
+
+def test_chains_reuses_precomputed_states_without_detect(monkeypatch) -> None:
+    """传入 states 时，chains()/pick() 不得再调用 registry.detect。"""
+    from sources import route
+
+    def boom(*_a, **_kw):
+        raise AssertionError("should not probe detect() when states is provided")
+
+    monkeypatch.setattr(route, "detect", boom)
+    fake_states = {"hithink": {"available": True}, "eastmoney": {"available": False}}
+    ch = route.chains(states=fake_states)
+    assert "hithink" in ch["stock_a"]
+    assert "eastmoney" not in ch["stock_a"]
+
+
 if __name__ == "__main__":
-    test_stock_a_excludes_wind_and_orders()
-    test_stock_hk_excludes_hithink()
-    test_fund_snapshot_skips_yingmi_ttfund()
-    test_us_skips_uninstalled_yfinance()
-    test_screen_is_eastmoney_only()
-    test_fetch_first_ok_stops()
-    test_fetch_does_not_mix_payloads()
-    test_eastmoney_missing_key_is_envelope_not_exit()
-    print("test_route: OK")
+    # 裸跑必须真执行，而且不能与 pytest 夹具打架：本文件里
+    # `test_eastmoney_missing_key_is_envelope_not_exit` 要 monkeypatch/tmp_path，
+    # 手工逐个调用会在它身上抛 TypeError（旧的手工清单还引用过已改名的函数）。
+    # 统一交给 pytest 收集，与 test_skill_integrity 的入口保持同一约定。
+    import pytest
+
+    raise SystemExit(pytest.main([__file__, "-q"]))

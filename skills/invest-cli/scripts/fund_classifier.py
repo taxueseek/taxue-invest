@@ -65,7 +65,10 @@ def normalize_code(symbol: str) -> str:
 
 
 def _envelope(ok: bool, data: Any = None, error: str = "") -> dict[str, Any]:
-    return {"source": SOURCE, "kind": "fund_class", "ok": ok, "data": data, "error": error}
+    """本源的出口。构造收口到 sources/envelope（P1，2026-11-09）。"""
+    from sources.envelope import envelope
+
+    return envelope(SOURCE, "fund_class", ok, data=data, error=error or None)
 
 
 def _classify_ftype(ftype: str, rules: dict[str, Any]) -> tuple[Optional[str], Optional[str], dict[str, Any]]:

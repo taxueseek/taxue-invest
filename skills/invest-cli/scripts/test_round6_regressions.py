@@ -499,9 +499,15 @@ def test_router_triggers_are_all_resolvable() -> None:
     assert fm, "frontmatter 缺失"
     triggers = re.findall(r"^\s*-\s*(\S+)\s*$", fm.group(1), re.M)
 
-    # 路由表 = 「| 「...」 | skill |」形式的行
+    # 路由表 = **「路由逻辑」段落里**「| 「...」 | skill |」形式的行。
+    #
+    # 只看这一节，不扫全文件：旧实现扫全文所有含「」的表格行，于是 trigger
+    # 「研报」被 deleted 之前的**示例表格**里「深度研报模式」这几个字供上了
+    # 一个假通过——真正该被问责的是路由表里根本没有这一行。示例表格现已删除，
+    # 但判据不能靠示例供着，故收窄到定义路由的那一节。
+    section = re.search(r"## 路由逻辑\n(.*?)\n## ", text, re.S)
     table = "\n".join(
-        ln for ln in text.splitlines()
+        ln for ln in (section.group(1) if section else "").splitlines()
         if ln.strip().startswith("|") and "「" in ln
     )
     generic = {"分析一下", "看看这个", "值得买吗", "这只怎么样"}

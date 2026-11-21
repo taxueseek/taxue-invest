@@ -19,6 +19,7 @@ if str(_SCRIPTS) not in sys.path:
 
 import cmd_cn  # noqa: E402
 import md_parse  # noqa: E402
+from sources import argo as argo_src  # noqa: E402
 from sources import westock  # noqa: E402
 
 NOTICE_OUTPUT = """共 929 条（第 1 页，每页 20 条，共 47 页）
@@ -100,7 +101,7 @@ def _fake_westock(output: str):
 
 
 def test_cn_notice_envelope(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(cmd_cn.westock, "call", _fake_westock(NOTICE_OUTPUT))
+    monkeypatch.setattr(westock, "call", _fake_westock(NOTICE_OUTPUT))
     assert cmd_cn.run("notice", ["600519"], as_json=True) == 0
     res = json.loads(capsys.readouterr().out)
     assert res["source"] == "westock" and res["kind"] == "cn_notice" and res["ok"] is True
@@ -109,7 +110,7 @@ def test_cn_notice_envelope(monkeypatch, capsys) -> None:
 
 
 def test_cn_consensus_terminal_prints_rows(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(cmd_cn.westock, "call", _fake_westock(CONSENSUS_OUTPUT))
+    monkeypatch.setattr(westock, "call", _fake_westock(CONSENSUS_OUTPUT))
     assert cmd_cn.run("consensus", ["600519"]) == 0
     out = capsys.readouterr().out
     assert "一致预期" in out and "70.84" in out and "目标价=1660.5983" in out
@@ -127,7 +128,7 @@ def test_cn_notice_search_uses_cninfo_engine(monkeypatch, capsys) -> None:
                                       "url": "https://static.cninfo.com.cn/x.pdf", "snippet": "2026-09-23"}],
                          "note": "argo 检索结果需核验"}}
 
-    monkeypatch.setattr(cmd_cn.argo_src, "search", _fake_search)
+    monkeypatch.setattr(argo_src, "search", _fake_search)
     assert cmd_cn.run("notice", [], as_json=True, search="会计政策变更") == 0
     res = json.loads(capsys.readouterr().out)
     assert seen["engine"] == "cninfo" and seen["query"] == "会计政策变更"
@@ -140,8 +141,8 @@ def test_cn_notice_falls_back_to_argo_when_westock_fails(monkeypatch, capsys) ->
         return {"source": "westock", "kind": "cli", "ok": False, "data": None,
                 "error": "westock 未找到（模拟通道故障）"}
 
-    monkeypatch.setattr(cmd_cn.westock, "call", _boom)
-    monkeypatch.setattr(cmd_cn.argo_src, "search",
+    monkeypatch.setattr(westock, "call", _boom)
+    monkeypatch.setattr(argo_src, "search",
                         lambda q, engine="eastmoney", limit=5: {
                             "source": "argo", "ok": True, "error": None,
                             "data": {"query": q, "engine": engine,
@@ -153,7 +154,7 @@ def test_cn_notice_falls_back_to_argo_when_westock_fails(monkeypatch, capsys) ->
 
 
 def test_cn_rejects_bad_args(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(cmd_cn.westock, "call", _fake_westock(NOTICE_OUTPUT))
+    monkeypatch.setattr(westock, "call", _fake_westock(NOTICE_OUTPUT))
     assert cmd_cn.run("notice", ["600519"], limit=-1) == 1
     assert "不能为负" in capsys.readouterr().err
     assert cmd_cn.run("unknown", ["600519"]) == 1

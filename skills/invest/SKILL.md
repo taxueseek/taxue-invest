@@ -61,7 +61,7 @@ triggers:
 | 关键词 | 路由 |
 |--------|------|
 | 「基金」「ETF」「基金经理」「基金管理人」 | invest-fund |
-| 「股票」「公司」「护城河」「PE」「ROE」「美股」「Apple」「TSLA」「NVDA」「港股」「南下」「北上」「深度分析」「DCF」「机构视角」「IC」 | invest-stock（A股/港股/美股+机构深度） |
+| 「股票」「公司」「护城河」「PE」「ROE」「美股」「Apple」「TSLA」「NVDA」「港股」「南下」「北上」「深度分析」「DCF」「机构视角」「IC」「季报」「财报」 | invest-stock（A股/港股/美股+机构深度） |
 | 「转债」「可转债」「转股」「溢价率」「债底」「下修」 | invest-asset（可转债细则） |
 | 「黄金」「白银」「原油」「商品」「大宗商品」 | invest-asset（商品细则，黄金叠加十维度） |
 | 「REIT」「REITs」「公募REIT」「分派率」 | invest-asset（REITs 细则） |
@@ -71,7 +71,7 @@ triggers:
 | 「大师怎么看」「圆桌」「巴菲特和芒格」「会诊」「多几个角度」「上会」「投委会」「重仓前再看看」 | invest-discuss |
 | 「债券」「国债」「利率债」「信用债」「城投」「债市」「利差」「久期」 | invest-asset（债券细则） |
 | 「流动性」「美联储」「缩表」「SOFR」「MOVE」「市场环境」「美股情绪」「NAAIM」「市场过热」「比特币抄底」「MVRV」「钱紧不紧」 | invest-macro |
-| 「出一份IC报告」「电话会」「业绩会」「纪要」「一致预期」「主题策略」「行业深度」「产业链」「市场日报」「晨报」「事件驱动」「投资论点」 | invest-analyst（机构级内容产出） |
+| 「出一份IC报告」「研报」「电话会」「业绩会」「纪要」「一致预期」「主题策略」「行业深度」「产业链」「市场日报」「晨报」「事件驱动」「投资论点」 | invest-analyst（机构级内容产出） |
 | 「企业分析」「企业深度」「企业信用」「企业一页纸」「这家企业怎么样」 | invest-enterprise |
 
 **混合表述**：如「分析一下易方达蓝筹这只基金」→ 含「基金」→ invest-fund。边界：「用机构视角看XX」「IC怎么样」= 判断买不买 → invest-stock；「出 IC 报告/写研报」= 产出文档 → invest-analyst。
@@ -95,22 +95,6 @@ triggers:
 
 ---
 
-## 示例
-
-| 用户说 | 动作 |
-|--------|------|
-| 「分析一下茅台」 | 分析茅台，进入invest-stock。 |
-| 「张坤的基金怎么样」 | 分析张坤的基金，进入invest-fund。 |
-| 「这只转债值得买吗」 | 分析这只转债，进入invest-asset（可转债细则）。 |
-| 「黄金能配置吗」 | 分析黄金，进入invest-asset（商品细则）。 |
-| 「REITs怎么看」 | 分析REITs，进入invest-asset（REITs细则）。 |
-| 「我的资产配置合理吗」 | 进入invest-allocation。 |
-| 「让巴菲特和芒格看看这只股」 | 进入invest-discuss（大师会诊）。 |
-| 「解读腾讯最新季报」 | 解读腾讯最新季报，进入invest-stock。 |
-| 「深度分析茅台，写个投资备忘录」 | 深度分析茅台，进入invest-stock（深度研报模式）。 |
-| 「出一份茅台的IC报告」 | 出一份茅台的IC报告，进入invest-analyst。 |
-| 「分析一下XX企业的信用风险」 | 进入invest-enterprise。 |
-
 ## 结论信号 → 下一步
 
 分析结束后按结论信号衔接下一步，不把用户留在断头路：
@@ -126,48 +110,10 @@ triggers:
 
 ---
 
-## 架构说明
+## 支撑层
 
-invest 系列采用三层架构：
+数据与呈现两层不在关键词路由上，由上面任一技能按需调用：
 
-| 层 | 职责 | 组件 |
-|---|---|---|
-| **方法论层** | 分析框架、决策逻辑、路由规则 | invest-*（本系列） |
-| **数据层** | 取数、清洗、结构化 | `mx-data`（统一数据源） |
-| **呈现层** | 报告模板、格式、交付 | `mx-templates`（报告模板库） |
-
-- invest-* 调用 mx-data 获取数据
-- invest-* 拿到数据后按方法论分析
-- invest-* 调用 mx-templates 渲染报告
-- mx-data 不知道"分析"是什么，mx-templates 不知道"数据"从哪来
-
----
-
-## invest系列完整图谱
-
-### 单一品种分析
-| 技能 | 分析对象 | 核心问题 |
-|------|---------|---------|
-| invest-stock | 个股（A股/港股/美股+机构深度） | 懂生意吗？有护城河吗？价格合适吗？ |
-| invest-fund | 基金/ETF/基金经理 | 懂策略吗？能跑赢吗？成本合理吗？ |
-| invest-asset | 可转债 / 黄金白银原油 / REITs / 债券（利率/信用） | 债券：偿付+利差+位置；可转债：条款+债底+溢价；商品：逻辑+位置+波动；REITs：底层+运营+估值 |
-| invest-enterprise | 单一企业主体 | 股东治理+行业+经营+财务+信用+司法 |
-
-### 组合与决策
-| 技能 | 功能 | 用途 |
-|------|------|------|
-| invest-allocation | 资产配置 | 股债商比例、再平衡、组合检视、投稳/投变、现金管理 |
-| invest-pool | 基金池管理 | 风格分类矩阵、选基七维度、行业轮动评估、更新机制 |
-| invest-discuss | 大师会诊 | 4视角×3深度，多视角验证、发现盲区 |
-| invest-macro | 宏观与市场环境 | 全球流动性、美股情绪、加密底部信号、市场温度 |
-| invest-analyst | 机构级工作台 | IC研报/主题策略/事件驱动/一致预期/行业深度/市场日报 |
-
-### 风险与纪律
-| 技能 | 功能 | 用途 |
-|------|------|------|
-| invest-risk | 风险认知与管理系统 | 风险四层递进诊断、风险管理四层框架、不依赖意志力的系统设计、现金管理与安全垫 |
-
-### 支撑层
 | 组件 | 职责 |
 |------|------|
 | mx-data | 多数据源聚合取数（同花顺/东财/天天/Wind/腾讯/argo 等，智能路由+组合） |
@@ -177,23 +123,25 @@ invest 系列采用三层架构：
 
 ## 数据源门闩（场景 → invest-cli 取数映射）
 
-取数统一走 invest-cli，不在分析 skill 里猜源。主路 = hithink（同花顺）。ttskill 只是可选深取，登录就绪才参与。可用性以 `invest-cli datasources` 运行时探测为准。
+取数统一走 invest-cli，不在分析 skill 里猜源。数据源声明与优先级的唯一真值是 `invest-cli/data-sources.yaml`；运行时链与可用性以 `invest-cli datasources` 自报为准。本表只写「场景 → 命令」，不写数据源链——同一事实存多份必然漂移（2026-10-17 债券行与运行时不一致的事故），源名留给 yaml 与运行时输出。
 
-| 场景 | 命令 | 数据源 |
-|------|------|--------|
-| A股快照 | `invest-cli stock <代码>` | hithink（同花顺） > eastmoney（东方财富） |
-| 港股快照 | `invest-cli stock <代码>` | eastmoney（东方财富） |
-| 美股快照 | `invest-cli us <代码>` | yfinance > tencent（腾讯行情） > tiingo > bitget |
-| 美股历史 | `invest-cli us <代码> --history` | tiingo |
-| 基金快照 | `invest-cli fund <代码>` | hithink（同花顺） > ttskill（天天基金，可选深取） > eastmoney（东方财富） |
-| 基金诊断/组合/配置 | `invest-cli intent deep/screen/portfolio/plan` | yingmi（盈米） |
-| 债券 | `invest-cli intent deep bond <代码>` | mxds（妙想） |
-| 资讯/舆情/宏观 | `invest-cli info` / `invest-cli intent macro` | argo / fred（FRED） |
-| 美股原文级 | `invest-cli sec <代码>` | sec_edgar（SEC EDGAR） |
-| 美股深取 | `invest-cli fmp <代码>` | fmp |
-| 指数/行业估值/宏观深取 | 透传 | wind / index_hub / etfirst / westock |
+| 场景 | 命令 | 说明 |
+|------|------|------|
+| A股快照 | `invest-cli stock <代码>` | A 股基本面/行情快照 |
+| 港股快照 | `invest-cli stock <代码>` | 同命令，市场自动识别 |
+| 美股快照 | `invest-cli us <代码>` | 美股全量快照 |
+| 美股历史 | `invest-cli us <代码> --history` | EOD 历史专项 |
+| 基金快照 | `invest-cli fund <代码>` | 公募基金快照 |
+| 基金诊断/组合/配置 | `invest-cli intent deep/screen/portfolio/plan` | 组合建议与规划 |
+| 债券 | `invest-cli intent deep bond <代码>` | 可转债/利率债 |
+| 资讯/舆情/宏观 | `invest-cli info` / `invest-cli intent macro` | 检索与时序 |
+| 美股原文级 | `invest-cli sec <代码>` | 财报原文（XBRL） |
+| 美股深取 | `invest-cli fmp <代码>` | 三表/比率/评级/预测 |
+| 指数/行业估值/宏观深取 | `invest-cli wind` / `invest-cli westock` 等具名直调 | 深取类，不经快照链 |
+| 基金事实/经理观点/行业穿透/指数预测 | `invest-cli htbr <api_id> --input '<json>'` | 72 接口直取，不进快照链 |
+| 基金档案/持仓穿透/经理画像/选基/组合体检 | `invest-cli sfg <别名> --input '<json>'` / `invest-cli intent sfg` | 见基行事 45 工具直取，不进快照链 |
 
-运行时解析约定（PATH 优先、缓存口径）见 `invest/references/cli-runtime.md`；其中两张派生表已作废，取数以本页映射表为准。
+运行时解析约定（PATH 优先、缓存口径）见 `invest/references/cli-runtime.md`。
 
 ## 已归档路由
 
@@ -227,4 +175,4 @@ invest 系列采用三层架构：
 
 ---
 
-*invest v3.0 | 三层架构（方法论/数据/呈现）· 新增 invest-enterprise · 统一走 mx-data + mx-templates*
+*invest | 三层架构（方法论/数据/呈现）· 统一走 mx-data + mx-templates · 版本见技能组根 frontmatter*

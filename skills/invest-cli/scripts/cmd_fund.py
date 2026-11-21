@@ -18,18 +18,10 @@ from datetime import datetime
 
 # urllib3 2.x 在 LibreSSL 环境下导入时 emit NotOpenSSLWarning，直接写 stderr。
 # CLI 的 stderr 是错误通道，不该被库噪音占据（agent 解析错误信息会被带偏）。
-# 必须在 import requests **之前**装过滤器，否则告警已在导入期发出。
-#
-# 注意 category 必须写 Warning 而不是 UserWarning：该告警的继承链是
-# NotOpenSSLWarning → SecurityWarning → HTTPWarning → Warning，
-# 与 UserWarning 无继承关系，用 UserWarning 或 message 正则都拦不住
-# （实测两者均无效，只有按 Warning + module 才生效）。
-#
-# 过滤器留在模块层，`import requests` 下沉到 query_eastmoney()：requests 的
-# import 自耗时实测约 70ms，而它只服务东财**兜底**这一条路（主路走
-# route.fetch：同花顺优先，ttskill 深取补充）。放在模块顶层等于每次
-# `invest-cli fund` 都先白付 70ms。先后关系不受影响：模块导入即装过滤器，
-# requests 的首次导入发生在第一次真正调用 query_eastmoney 时，始终在后。
+# 东财主网出口已改为标准库 sources/_http.guarded_request，不再直接导入 requests；
+# 保留模块级过滤以防传递依赖在系统解释器下触发告警。
+# 注意 category 必须写 Warning 而不是 UserWarning（NotOpenSSLWarning 继承链
+# 为 NotOpenSSLWarning → SecurityWarning → HTTPWarning → Warning）。
 warnings.filterwarnings("ignore", category=Warning, module=r"urllib3.*")
 
 EASTMONEY_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw/query"
@@ -46,16 +38,28 @@ def get_api_key():
 
 
 def query_eastmoney(query: str) -> dict:
-    import requests  # noqa: PLC0415 —— 见文件头「下沉 import」说明
+    """调用东方财富 API，返回原始响应。
 
-    resp = requests.post(
+    2026-11-09 P0 收口：从 requests.post 改走共享安全闸 sources/_http.guarded_request
+    （https + host 白名单 + DNS 公网校验 + 禁重定向）。此前 requests 不过闸，
+    DNS rebinding 与重定向绕过对本路径完全失效。
+    """
+    from sources._http import guarded_request
+
+    status, body, _headers = guarded_request(
         EASTMONEY_URL,
         headers={"apikey": get_api_key(), "Content-Type": "application/json"},
-        json={"toolQuery": query},
+        json_body={"toolQuery": query},
         timeout=30,
+        allowed_host="mkapi2.dfcfs.com",
     )
-    resp.raise_for_status()
-    return resp.json()
+    if status < 200 or status >= 300:
+        snippet = body[:200].decode("utf-8", errors="replace").replace("\n", " ")
+        raise RuntimeError(f"东财 HTTP {status}: {snippet}")
+    try:
+        return json.loads(body.decode("utf-8", errors="replace"))
+    except ValueError as e:
+        raise RuntimeError(f"东财返回非 JSON: {e}") from e
 
 
 def parse_tables(raw: dict) -> list[dict]:
@@ -162,11 +166,12 @@ def fetch_fund_with_fallback(keyword: str) -> dict:
         f_deep = pool.submit(_ttskill_deep, keyword)
         snap = f_snap.result()
         # 深取是增强型补充字段，不能阻塞主快照交付。
-        # 默认等待最多 2.5s（环境变量 INVEST_CLI_FUND_DEEP_TIMEOUT 可覆写），超时优雅降级放弃深取，避免被上游网络慢拖死
+        # 默认等待最多 1.5s（环境变量 INVEST_CLI_FUND_DEEP_TIMEOUT 可覆写），超时优雅降级放弃深取，避免被上游网络慢拖死。
+        # 1.5s 是实测 ttskill 深取（两次子进程调用）的 P99 上限；超过即视为异常，放弃深取。
         try:
-            deep_timeout = float(os.environ.get("INVEST_CLI_FUND_DEEP_TIMEOUT", "2.5"))
+            deep_timeout = float(os.environ.get("INVEST_CLI_FUND_DEEP_TIMEOUT", "1.5"))
         except (ValueError, TypeError):
-            deep_timeout = 2.5
+            deep_timeout = 1.5
         try:
             deep = f_deep.result(timeout=deep_timeout)
         except Exception:
@@ -184,6 +189,104 @@ def fetch_fund_with_fallback(keyword: str) -> dict:
         f"深取字段（{'、'.join(added)}）来自 ttskill"
     ]
     return snap
+
+
+def _fetch_kline_rows(code: str) -> list[dict] | None:
+    """直调原生 tencent.kline 拿日线，避免 redirect_stdout + JSON 往返。"""
+    try:
+        from sources import tencent
+
+        res = tencent.kline(code, period="day", limit=250)
+        if res.get("ok"):
+            return (res.get("data") or {}).get("rows")
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_index_hub_bundle(code: str) -> dict | None:
+    try:
+        from sources import index_hub
+
+        if not index_hub.is_available():
+            return None
+        ih_detail = index_hub.fetch_etf_detail(code)
+        ih_scale = index_hub.fetch_etf_scale(code)
+        out: dict = {}
+        if ih_detail.get("ok"):
+            out["detail"] = ih_detail["data"]
+        if ih_scale.get("ok"):
+            out["scale"] = ih_scale["data"]
+        return out or None
+    except Exception:
+        return None
+
+
+def _fetch_etfirst_detail(code: str) -> dict | None:
+    try:
+        from sources import etfirst
+
+        if not etfirst.is_available():
+            return None
+        ef_result = etfirst.fetch_etf_detail(code)
+        if ef_result.get("ok"):
+            return ef_result.get("data", {})
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_htbr_facts(code: str) -> dict | None:
+    """htbr 就绪时并发补充 ETF 事实信息（失败静默跳过，不拖累主分析）。"""
+    try:
+        from sources import htbr
+
+        if not htbr.is_available():
+            return None
+        res = htbr.call("fund-basic-info", {"fund_code": code})
+        if res.get("ok") and res.get("data"):
+            return res["data"]
+    except Exception:
+        pass
+    return None
+
+
+def fetch_fund_analytics(keyword: str) -> dict:
+    """ETF 深度分析：快照 + 并发增强（K线 / 指数直通车 / ETFirst / htbr）。
+
+    `invest-cli fund --analytics` 与 `python cmd_fund.py --analytics` 曾各自
+    复制整段装配逻辑，选项一改就得改两处；这里是唯一实现。
+    K线/Index Hub/ETFirst/htbr 都是增强项，任何一路失败或超时只缺对应字段，不拖垮主快照。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from etf_analytics import analyze_etf
+
+    data = fetch_fund_with_fallback(keyword)
+    code = data.get("code") or keyword
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f_kline = pool.submit(_fetch_kline_rows, code)
+        f_ih = pool.submit(_fetch_index_hub_bundle, code)
+        f_ef = pool.submit(_fetch_etfirst_detail, code)
+        f_htbr = pool.submit(_fetch_htbr_facts, code)
+
+        def _safe_get(fut, timeout: float = 5.0):
+            try:
+                return fut.result(timeout=timeout)
+            except Exception:
+                return None
+
+        kline_data = _safe_get(f_kline)
+        index_hub_data = _safe_get(f_ih)
+        etfirst_data = _safe_get(f_ef)
+        htbr_facts = _safe_get(f_htbr)
+
+    out = analyze_etf(data, kline_data=kline_data, index_hub_data=index_hub_data,
+                      etfirst_data=etfirst_data)
+    if htbr_facts:
+        out["htbr_facts"] = htbr_facts
+    return out
 
 
 def fetch_fund_data(code: str) -> dict:
@@ -382,63 +485,18 @@ def main():
     args = parser.parse_args()
 
     try:
+        if args.analytics:
+            analysis = fetch_fund_analytics(args.keyword)
+            if args.json:
+                print(json.dumps(analysis, ensure_ascii=False, indent=2))
+            else:
+                from etf_analytics import format_terminal as fmt_analytics
+                print(fmt_analytics(analysis))
+            return
         data = fetch_fund_with_fallback(args.keyword)
     except Exception as e:
         print(f"错误: {e}", file=sys.stderr)
         sys.exit(1)
-
-    if args.analytics:
-        from etf_analytics import analyze_etf, format_terminal
-
-        # 获取 K 线数据用于回撤分析
-        kline_data = None
-        code = data.get("code") or args.keyword
-        try:
-            from cmd_kline import run as kline_run
-            import io
-            import contextlib
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                kline_run(code, period="day", limit=250, as_json=True)
-            kline_json = json.loads(buf.getvalue())
-            kline_data = kline_json.get("data", {}).get("rows")
-        except Exception:
-            pass
-
-        # 获取 Index Hub 数据（失败时静默降级）
-        index_hub_data = None
-        try:
-            from sources import index_hub
-            if index_hub.is_available():
-                ih_detail = index_hub.fetch_etf_detail(code)
-                ih_scale = index_hub.fetch_etf_scale(code)
-                index_hub_data = {}
-                if ih_detail.get("ok"):
-                    index_hub_data["detail"] = ih_detail["data"]
-                if ih_scale.get("ok"):
-                    index_hub_data["scale"] = ih_scale["data"]
-                if not index_hub_data:
-                    index_hub_data = None
-        except Exception:
-            pass
-
-        # 获取 ETFirst 数据（失败时静默降级）
-        etfirst_data = None
-        try:
-            from sources import etfirst
-            if etfirst.is_available():
-                ef_result = etfirst.fetch_etf_detail(code)
-                if ef_result.get("ok"):
-                    etfirst_data = ef_result.get("data", {})
-        except Exception:
-            pass
-
-        analysis = analyze_etf(data, kline_data=kline_data, index_hub_data=index_hub_data, etfirst_data=etfirst_data)
-        if args.json:
-            print(json.dumps(analysis, ensure_ascii=False, indent=2))
-        else:
-            print(format_terminal(analysis))
-        return
 
     if args.json:
         print(json.dumps(data, ensure_ascii=False, indent=2))

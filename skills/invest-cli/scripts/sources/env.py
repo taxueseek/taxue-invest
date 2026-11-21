@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -135,7 +136,7 @@ def read_env(name: str) -> str:
     val = os.environ.get(name, "").strip()
     if val:
         return val
-    if os.uname().sysname == "Darwin":
+    if sys.platform == "darwin":
         val = _launchctl_getenv(name)
         if val:
             return val

@@ -2,7 +2,6 @@
 """etf_analytics 单元测试 — 纯标准库，零第三方依赖。"""
 from __future__ import annotations
 
-import json
 import os
 import sys
 import unittest
@@ -147,6 +146,31 @@ class TestAnalyzeDrawdown(unittest.TestCase):
         ]
         result = analyze_drawdown(kline)
         self.assertEqual(result["recovery_days"], 1)
+
+    def test_drawdown_history_uses_actual_trough_and_stops_at_recovery(self):
+        kline = [
+            {"date": "2026-01-01", "close": 100},
+            {"date": "2026-01-02", "close": 60},   # 真实谷底 -40%
+            {"date": "2026-01-03", "close": 95},   # 恢复前一天（旧实现误用它）
+            {"date": "2026-01-04", "close": 105},  # 创新高，第 2 天回本
+            {"date": "2026-01-05", "close": 110},
+        ]
+        result = analyze_drawdown(kline)
+        self.assertEqual(result["recovery_days"], 2)
+        self.assertEqual(result["drawdown_history"][0]["depth_pct"], -40.0)
+        self.assertEqual(result["drawdown_history"][0]["trough_date"], "2026-01-02")
+        self.assertEqual(result["drawdown_history"][0]["days"], 1)
+
+    def test_unrecovered_drawdown_returns_none_recovery_days(self):
+        kline = [
+            {"date": "2026-01-01", "close": 100},
+            {"date": "2026-01-02", "close": 70},
+            {"date": "2026-01-03", "close": 85},
+        ]
+        result = analyze_drawdown(kline)
+        self.assertIsNone(result["recovery_days"])
+        self.assertEqual(result["drawdown_history"][0]["depth_pct"], -30.0)
+        self.assertEqual(result["drawdown_history"][0]["trough_date"], "2026-01-02")
 
 
 class TestAnalyzeCorrelation(unittest.TestCase):
@@ -486,6 +510,22 @@ class TestFormatTerminal(unittest.TestCase):
         output = format_terminal(analysis)
         self.assertIn("510300", output)
         self.assertIn("持仓穿透", output)
+
+
+class TestFetchFundAnalyticsConcurrency(unittest.TestCase):
+    def test_concurrent_enrichment_with_htbr_and_graceful_degradation(self):
+        from unittest.mock import patch
+        import cmd_fund
+
+        fake_snap = {"code": "510300", "name": "沪深300ETF", "data": {}, "holdings": []}
+        with patch.object(cmd_fund, "fetch_fund_with_fallback", return_value=fake_snap), \
+             patch.object(cmd_fund, "_fetch_kline_rows", return_value=[]), \
+             patch.object(cmd_fund, "_fetch_index_hub_bundle", side_effect=RuntimeError("boom")), \
+             patch.object(cmd_fund, "_fetch_etfirst_detail", return_value=None), \
+             patch.object(cmd_fund, "_fetch_htbr_facts", return_value={"fund_code": "510300", "scale": "1000亿"}):
+            res = cmd_fund.fetch_fund_analytics("510300")
+        self.assertEqual(res["fund_code"], "510300")
+        self.assertEqual(res["htbr_facts"]["scale"], "1000亿")
 
 
 if __name__ == "__main__":

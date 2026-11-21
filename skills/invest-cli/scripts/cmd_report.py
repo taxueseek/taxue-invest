@@ -19,7 +19,7 @@
     invest-cli report 005827 --latest 4       下载最新 4 期（四季是体检的常用跨度）
     invest-cli report 005827 --year 2025      下载 2025 年发布的全部报告
     invest-cli report 005827 --all            下载全部历史（005827 为 52 期）
-    invest-cli report 005827 --out DIR        输出目录（默认 ./fund_reports/<代码>/）
+    invest-cli report 005827 --out DIR        输出目录（默认 state 目录 reports/<代码>/）
 
 文件名 `{发布日}_{报告全名}.pdf`（非法字符净化），按时间自然排序；PDF 以 %PDF-
 头校验，小于 50KB 告警——半截文件比下载失败更危险，宁可让调用方复核。
@@ -29,12 +29,24 @@ from __future__ import annotations
 import json
 import re
 import sys
-import urllib.request
 from pathlib import Path
 
 from sources._http import USER_AGENT, guarded_open
 
 KIND = "fund_reports"
+
+
+def _default_out(code: str) -> Path:
+    """默认输出目录：state 目录（~/.config/invest-cli/reports/<代码>/）。
+
+    为什么不再是 `Path.cwd() / "fund_reports"`：CLI 常在仓库目录被调用，
+    产物落 CWD 会把几十 MB 的 PDF 堆进 skill 目录（2026-10-25 体检实锤
+    1.7M 未跟踪产物）。报告是用户数据，跟 watchlist 一样归 state_root
+    （INVEST_CLI_STATE_DIR 可整体覆盖），删缓存不丢报告。
+    """
+    from _common import state_root
+
+    return state_root() / "reports" / code
 _API_HOST = "api.fund.eastmoney.com"
 _PDF_HOST = "pdf.dfcfw.com"
 _LIST_REFERER = "https://fundf10.eastmoney.com/jjgg_{code}.html"
@@ -60,6 +72,8 @@ def fetch_reports(code: str, page_size: int = 50) -> list[dict]:
         pass
     url = (f"https://{_API_HOST}/f10/JJGG?fundcode={code}"
            f"&pageIndex=1&pageSize={page_size}&type=3")
+    import urllib.request
+
     req = urllib.request.Request(url, headers={
         "Referer": _LIST_REFERER.format(code=code),
         "User-Agent": USER_AGENT,
@@ -103,6 +117,8 @@ def download_one(item: dict, out_dir: Path) -> dict:
                 "size": target.stat().st_size, "warning": None, "error": None,
                 "skipped": True}
     url = f"https://{_PDF_HOST}/pdf/H2_{item['id']}_1.pdf"
+    import urllib.request
+
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with guarded_open(req, timeout=60, allowed_host=_PDF_HOST) as resp:
@@ -161,7 +177,7 @@ def run(code: str, latest: int = 0, year: int = 0, all_reports: bool = False,
         return 1
 
     selected = _select(reports, latest, year, all_reports)
-    dest = Path(out_dir).expanduser() if out_dir else Path.cwd() / "fund_reports" / code
+    dest = Path(out_dir).expanduser() if out_dir else _default_out(code)
     if not selected:
         results = []
     elif len(selected) == 1:
@@ -223,7 +239,7 @@ def main() -> None:  # 便于 `python3 cmd_report.py` 直接调试
     p.add_argument("--latest", type=int, default=0, help="下载最新 N 期（默认 0=仅列出）")
     p.add_argument("--year", type=int, default=0, help="下载指定年份发布的报告")
     p.add_argument("--all", dest="all_reports", action="store_true", help="下载全部历史")
-    p.add_argument("--out", default="", help="输出目录（默认 ./fund_reports/<代码>/）")
+    p.add_argument("--out", default="", help="输出目录（默认 state 目录 reports/<代码>/）")
     p.add_argument("--limit", type=int, default=10, help="仅列出时的条数（默认 10）")
     p.add_argument("--json", action="store_true")
     a = p.parse_args()

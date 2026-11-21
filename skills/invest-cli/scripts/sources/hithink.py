@@ -14,15 +14,15 @@ from __future__ import annotations
 import json
 import os
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ._http import guarded_open
+
+# urllib 延迟导入：与 tencent.py 同理，模块级 import urllib.request 冷启动 ~18ms。
+# 本模块的 HTTP 走 _http.guarded_open，只有少数辅助函数直接用到 urllib.parse/error。
 
 API_BASE = "https://fuyao.aicubes.cn"
 DEFAULT_TIMEOUT = 15
@@ -237,13 +237,28 @@ AMBIGUOUS_PREFIX = "多个候选无法唯一消歧"
 
 
 def _envelope(kind: str, ok: bool, data: Any = None, error: Optional[str] = None) -> dict[str, Any]:
-    env: dict[str, Any] = {"source": "hithink", "kind": kind, "ok": ok, "data": data, "error": error}
-    if not ok and isinstance(error, str) and error.startswith(AMBIGUOUS_PREFIX):
-        env["input_error"] = True  # 输入不足以定位标的：整条链终止，不要换源去猜
-    return env
+    """本源的出口。构造收口到 sources/envelope（P1，2026-11-09）。
+
+    input_error 语义保持：错误文案以 AMBIGUOUS_PREFIX 开头时，route 据此终止
+    整条链（换源解决不了输入不足的问题）。
+    """
+    from .envelope import envelope
+
+    return envelope(
+        "hithink", kind, ok, data=data, error=error,
+        input_error=(not ok) and bool(error and error.startswith(AMBIGUOUS_PREFIX)),
+    )
 
 
 def _default_http_get(url: str, headers: Optional[dict[str, str]] = None) -> tuple[int, str]:
+    # 延迟导入必须落在**真正使用它**的函数里：a1c4923 为省 18ms 冷启动把模块级
+    # `import urllib.request/error` 删了，却只在 `_request` 里补了 `urllib.parse`，
+    # 于是这里首次调用即 `NameError: name 'urllib' is not defined`——同花顺是
+    # stock/fund 的链首，整条主路静默失效，回退到东财/ttskill 后每次多付 2~6s。
+    # 测试全部注入 `http_get` 桩，没人走到这层，550 条用例因此全绿。
+    import urllib.error
+    import urllib.request
+
     req = urllib.request.Request(url, headers=headers or {})
     try:
         with guarded_open(req, DEFAULT_TIMEOUT, allowed_host="fuyao.aicubes.cn") as resp:
@@ -263,6 +278,7 @@ def _request(
     http_get: Optional[_HttpGet] = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    import urllib.parse
     getter = http_get or _default_http_get
     qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
     url = f"{API_BASE}{path}" + (f"?{qs}" if qs else "")
@@ -337,6 +353,12 @@ def _request_many(
     return out
 
 
+# 代码/名称 → thscode 的映射几乎不变，而 stock/fund 每次快照未命中都要先**串行**
+# 付一次 search（实测中位 126–150ms，新连接 590–640ms，占冷取 15–40%）。
+# 与 tencent.search 同一做法：走 _common 统一缓存落盘 24h。
+_SEARCH_TTL = 86400.0
+
+
 def _search(
     q: str,
     *,
@@ -348,6 +370,18 @@ def _search(
     params: dict[str, Any] = {"q": q, "limit": 10}
     if asset_type:
         params["asset_type"] = asset_type
+    # 只在生产路径（未注入 http_get）读写缓存：注入桩的测试保持直通语义。
+    cache_get = cache_set = None
+    if http_get is None:
+        try:
+            from _common import cache_get, cache_set
+        except Exception:  # pragma: no cover
+            cache_get = cache_set = None
+    ckey = f"{q}|{asset_type or ''}"
+    if cache_get:
+        hit = cache_get("hithink_search", ckey, _SEARCH_TTL)
+        if isinstance(hit, list) and hit:
+            return hit, None
     payload, err = _request(
         "/api/meta/tickers/search",
         params,
@@ -357,7 +391,11 @@ def _search(
     )
     if err:
         return [], err
-    return _items((payload or {}).get("data")), None
+    items = _items((payload or {}).get("data"))
+    # 空结果不落盘：「查无此标的」可能是新上市/上游抖动，不该被钉住 24h。
+    if cache_set and items:
+        cache_set("hithink_search", ckey, items)
+    return items, None
 
 
 def pick_ticker(

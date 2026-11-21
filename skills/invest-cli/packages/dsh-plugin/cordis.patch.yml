@@ -1,12 +1,12 @@
-# invest-cli-dsh bundle：默认一行 —— 注册**单个** invest 工具。
+# invest-cli-dsh bundle：默认一行 —— 注册单个 invest 工具。
 #
-# 为什么是单工具而不是 21 个具名工具：工具定义（名称+描述+schema）每轮请求都
-# 注入上下文且压缩清不掉。21 个具名工具 ≈4K token/轮 的常驻开销，而本 CLI 的
-# 调用面是**平摊**的（会话日志实测 top5 是 stock/sec/us/cn/tenure，各占 6-9%），
+# 为什么是单工具而不是每个子命令一个具名工具：工具定义（名称+描述+schema）每轮请求都
+# 注入上下文且压缩清不掉。逐个具名工具 ≈4K token/轮 的常驻开销，而本 CLI 的
+# 调用面是平摊的（会话日志实测 top5 是 stock/sec/us/cn/tenure，各占 6-9%），
 # 没有哪条够格做「专属工具」。单入口把常驻开销压到 ≈0.5K/轮，同时保住全能力面。
 #
-# 依赖：Python 3.10+（skill 自带 venv 时 `us` 走 yfinance 全量快照；无 venv 时
-# 回退系统 python3，`us` 降级为腾讯行情/Bitget 报价）。入口解析见 dsh/index.js。
+# 依赖：Python 3.9+。入口解析优先 ~/.local/bin/invest-cli，其次 skill 自带 venv，
+# 最后系统 python3。自带可视化设置页注入 @deepseek-ai/dsh-client-ui-settings。
 #
 # 同 id 可在用户层 cordis.patch.yml 覆盖（同 id + name 才是替换）。
 
@@ -14,8 +14,15 @@
     - id: invest-cli
       name: '@taxueseek/invest-cli-dsh'
       config:
-        # 单次命令超时；tenure / report 有各自的更长预算（见 dsh/index.js DEFAULTS）
+        # 单次命令超时；tenure / report / sec 有各自的更长预算（见 COMMAND_TIMEOUTS）
         timeoutMs: 60000
-        # 单次返回的最大字符数，超出截断并注明（防 `screen --json` 这类
-        # 88KB 载荷把上下文顶爆）
+        # 单次返回的最大字符数，超出截断并安全封装（safeClip 防坏 JSON）
         maxOutputChars: 24000
+        # 默认返回结构化 JSON
+        json: true
+        # 单次调用参数保护上限
+        maxArgs: 32
+        # 停用的数据源（逗号分隔）；停用后不参与自动路由，具名直调不受影响。
+        # 面板「数据源拓扑」页的开关写这里，spawn 时注入 INVEST_CLI_DISABLE_SOURCES，
+        # invest-cli 每次调用都是新进程，改完立即生效。
+        disabledSources: ''
